@@ -1,0 +1,30 @@
+{
+  "name": "sanguis-et-gloria",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Sanguis et Gloria – brutales Gladiatoren-PvP für den Handy-Browser",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host",
+    "assets": "node tools/build-assets.mjs",
+    "shot": "node tools/screenshot.mjs"
+  },
+  "dependencies": {
+    "@babylonjs/core": "^9.36.0",
+    "@babylonjs/loaders": "^9.36.0",
+    "@babylonjs/materials": "^9.36.0"
+  },
+  "devDependencies": {
+    "@gltf-transform/core": "^4.2.1",
+    "@gltf-transform/extensions": "^4.2.1",
+    "@gltf-transform/functions": "^4.2.1",
+    "meshoptimizer": "^1.3.0",
+    "puppeteer-core": "^24.0.0",
+    "sharp": "^0.34.0",
+    "typescript": "~5.9.3",
+    "vite": "^8.3.8"
+  }
+}

@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#1a0f0a" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Sanguis" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="./icons/icon-180.png" />
+    <link rel="icon" type="image/png" href="./icons/icon-192.png" />
+    <title>Sanguis et Gloria</title>
+  </head>
+  <body>
+    <canvas id="game" touch-action="none"></canvas>
+
+    <div id="loading" class="screen">
+      <div class="title">SANGUIS <span>ET</span> GLORIA</div>
+      <div class="subtitle">Ludus von Capua</div>
+      <div class="bar"><div id="loading-bar"></div></div>
+      <div id="loading-text">Lade Arena …</div>
+    </div>
+
+    <div id="rotate" class="screen">
+      <div class="rotate-icon">⟲</div>
+      <div>Bitte das Handy quer halten</div>
+    </div>
+
+    <div id="hud" hidden>
+      <div id="top-left">
+        <button id="btn-cheer" class="round small" aria-label="Publikum anheizen">✊</button>
+      </div>
+      <div id="top-right">
+        <span id="fps"></span>
+        <button id="btn-settings" class="round small" aria-label="Einstellungen">⚙</button>
+      </div>
+      <div id="bars">
+        <div class="bar hp"><div id="hp-fill"></div></div>
+        <div class="bar st"><div id="st-fill"></div></div>
+      </div>
+      <div id="hint"></div>
+
+      <!-- Schema B: Tasten -->
+      <div id="buttons">
+        <button id="btn-roll" class="round" data-action="roll">Rolle</button>
+        <button id="btn-bash" class="round" data-action="bash">Faust</button>
+        <button id="btn-block" class="round" data-action="block">Schild</button>
+        <button id="btn-attack" class="round big" data-action="attack">Schlag</button>
+      </div>
+
+      <div id="stick-base"><div id="stick-knob"></div></div>
+    </div>
+
+    <div id="settings" class="panel" hidden>
+      <h2>Einstellungen</h2>
+      <label>Steuerung
+        <select id="set-scheme">
+          <option value="gestures">A: Stick + Gesten</option>
+          <option value="buttons">B: Stick + Tasten</option>
+        </select>
+      </label>
+      <label>Grafik
+        <select id="set-quality">
+          <option value="auto">Automatisch</option>
+          <option value="ultra">Ultra</option>
+          <option value="high">Hoch</option>
+          <option value="medium">Mittel</option>
+          <option value="low">Niedrig</option>
+        </select>
+      </label>
+      <label>Renderer
+        <select id="set-renderer">
+          <option value="webgl2">WebGL2 (stabil)</option>
+          <option value="webgpu">WebGPU (experimentell)</option>
+        </select>
+      </label>
+      <label>Tageszeit <span id="time-label"></span>
+        <input id="set-time" type="range" min="6" max="20.5" step="0.25" />
+      </label>
+      <label class="row"><input id="set-battery" type="checkbox" /> Akku-Modus (30 FPS)</label>
+      <label class="row"><input id="set-fps" type="checkbox" /> FPS anzeigen</label>
+      <p class="help" id="help-text"></p>
+      <button id="btn-close-settings" class="wide">Zurück in die Arena</button>
+    </div>
+
+    <div id="install" class="panel" hidden>
+      <h2>Vollbild</h2>
+      <p>Für Vollbild ohne Browserleiste: im Teilen-Menü „Zum Home-Bildschirm“ wählen und das Spiel von dort starten.</p>
+      <button id="btn-close-install" class="wide">Verstanden</button>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
