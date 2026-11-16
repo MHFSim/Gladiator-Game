@@ -25,7 +25,10 @@ async function boot(): Promise<void> {
   progress(0.05, 'Starte Grafik …');
   const { engine, kind } = await createEngine(canvas, settings.renderer);
   let tier = guessTier(settings.quality);
-  const profile = PROFILES[tier];
+  const profile = { ...PROFILES[tier] };
+  if (params.get('scale')) profile.renderScale = parseFloat(params.get('scale')!);
+  if (params.get('cascades')) profile.cascades = parseInt(params.get('cascades')!, 10);
+  if (params.get('bloom')) profile.bloom = params.get('bloom') === '1';
   const maxScale = Math.min(profile.renderScale, window.devicePixelRatio || 1);
   engine.setHardwareScalingLevel(1 / maxScale);
 

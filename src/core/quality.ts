@@ -15,7 +15,7 @@ export interface QualityProfile {
 }
 
 export const PROFILES: Record<Tier, QualityProfile> = {
-  ultra: { tier: 'ultra', renderScale: 2.0, shadowMapSize: 2048, cascades: 3, bloom: true, grain: true, dust: 600, fireParticles: 260 },
+  ultra: { tier: 'ultra', renderScale: 2.0, shadowMapSize: 2048, cascades: 2, bloom: true, grain: true, dust: 600, fireParticles: 260 },
   high: { tier: 'high', renderScale: 1.6, shadowMapSize: 2048, cascades: 2, bloom: true, grain: true, dust: 350, fireParticles: 180 },
   medium: { tier: 'medium', renderScale: 1.25, shadowMapSize: 1024, cascades: 2, bloom: false, grain: false, dust: 150, fireParticles: 110 },
   low: { tier: 'low', renderScale: 1.0, shadowMapSize: 1024, cascades: 1, bloom: false, grain: false, dust: 0, fireParticles: 60 },
