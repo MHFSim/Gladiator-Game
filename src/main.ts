@@ -10,6 +10,8 @@ import { TEAM_COLORS } from './game/match';
 import { Gladiator, GladiatorAssets } from './gladiators/gladiator';
 import { bindButtons, TouchInput } from './input/touch';
 import { createEnvironment } from './render/environment';
+import { Cinema } from './render/cinema';
+import { GroundFx } from './game/ground';
 import { Hud } from './ui/hud';
 import { loadHero } from './game/hero';
 import { Sound } from './audio/sound';
@@ -105,6 +107,8 @@ async function boot(): Promise<void> {
   if (params.get('arena')) settings.arena = params.get('arena') as ArenaKind;
   let built = buildArena(settings.arena, scene, env, profile);
 
+  const cinema = new Cinema(scene, camera, env, profile);
+  cinema.setArena(built.arena);
   const assets = await GladiatorAssets.load(scene, progress);
   progress(0.8, 'Lege die Rüstung an …');
   const player = Gladiator.create(scene, env, assets, { field: '#8e1c16', emblem: '#e2b65a', plume: [170, 24, 20] });
@@ -145,6 +149,8 @@ async function boot(): Promise<void> {
       env.setTime(time);
       weather.set(w);
       game?.setWeatherRules(weather.rules);
+      if (game?.ground) game.ground.wet = w === 'rain' || w === 'storm' || w === 'fog';
+      cinema.setDust(w === 'clear' ? 1.3 : w === 'cloudy' ? 0.7 : 0);
       if (announce) window.setTimeout(() => hud.hint(`${WEATHER_NAMES[w]} – ${RULE_TEXT[w]}`, 3.5), 600);
     },
     arena(): ArenaKind {
@@ -159,6 +165,7 @@ async function boot(): Promise<void> {
       built.dispose();
       built = buildArena(kind, scene, env, profile);
       game?.setArena(built.arena);
+      cinema.setArena(built.arena);
       weather.set(weather.kind);
       game?.setWeatherRules(weather.rules);
       await withTimeout(scene.whenReadyAsync(), 10000, 'Arena vorbereiten').catch(() => undefined);
@@ -187,6 +194,8 @@ async function boot(): Promise<void> {
   g.blockAssist = settings.blockAssist;
   g.setGore(settings.gore);
   g.life.caster = (m) => env.addCaster(m);
+  g.cinema = cinema;
+  g.ground = new GroundFx(scene, profile.tier === 'ultra' || profile.tier === 'high');
   world.apply(world.pick().weather, settings.timeOfDay, false);
   const hero = loadHero();
   let hinted = false;
@@ -208,7 +217,8 @@ async function boot(): Promise<void> {
   await withTimeout(scene.whenReadyAsync(), 12000, 'Shader vorbereiten');
 
   // Bildrate stabil halten
-  const target = () => (settings.battery ? 30 : 60);
+  // Schönheit zuerst: auf den höchsten Stufen reichen ~40 Bilder, bevor die Auflösung sinkt
+  const target = () => (settings.battery ? 30 : tier === 'ultra' ? 40 : tier === 'high' ? 50 : 60);
   const dyn = new DynamicResolution(maxScale, Math.max(0.75, maxScale * 0.55), target(), (s) => engine.setHardwareScalingLevel(1 / s));
   let lowStreak = 0;
 
@@ -248,7 +258,7 @@ async function boot(): Promise<void> {
     if (view === 'high') g.debugCamera(new Vector3(-21, 15, -8), new Vector3(12, 9, 8));
     if (view === 'duel') g.debugCamera(new Vector3(4.5, 2.2, -3), new Vector3(0, 1.2, -1.8));
     scene.render();
-    const fps = dyn.update(frameDt);
+    const fps = params.has('nodyn') ? null : dyn.update(frameDt);
     if (fps !== null) {
       hud.setFps(fps);
       // Dauerhaft zu langsam -> Stufe senken (wirkt nach Neustart)
@@ -282,6 +292,7 @@ async function boot(): Promise<void> {
   (window as unknown as { __game: Game; __input: TouchInput }).__game = g;
   (window as unknown as { __world: typeof world }).__world = world;
   (window as unknown as { __input: TouchInput }).__input = input;
+  (window as unknown as { __env: typeof env }).__env = env;
 }
 
 boot().catch((e) => {

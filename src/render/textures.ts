@@ -135,7 +135,7 @@ export function sandMaps(scene: Scene, size = 512): PbrMaps {
       pebble = pebble > 0.72 ? (pebble - 0.72) * 3.5 : 0;
       const ht = grain * 0.35 + ripple * 0.45 + pebble * 0.6;
       hgt[y * w + x] = ht;
-      const shade = 0.82 + grain * 0.22 + (patch - 0.5) * 0.18 + pebble * 0.25;
+      const shade = 0.8 + grain * 0.24 + (patch - 0.5) * 0.26 + pebble * 0.25;
       const i = (y * w + x) * 3;
       col[i] = 198 * shade;
       col[i + 1] = 166 * shade;
@@ -209,7 +209,7 @@ export function plasterMaps(scene: Scene): PbrMaps {
   for (let i = 0; i < panels; i++) {
     const x0 = (i * w) / panels + 26;
     const pw = w / panels - 52;
-    ctx.fillStyle = i % 2 === 0 ? '#8e2a1d' : '#b9823a';
+    ctx.fillStyle = i % 2 === 0 ? '#71251a' : '#8f6a3a';
     ctx.fillRect(x0, h * 0.12, pw, h * 0.6);
     ctx.strokeStyle = '#1c0f0a';
     ctx.lineWidth = 3;
@@ -220,7 +220,7 @@ export function plasterMaps(scene: Scene): PbrMaps {
     // Kranz in der Mitte
     const cx = x0 + pw / 2;
     const cy = h * 0.42;
-    ctx.strokeStyle = i % 2 === 0 ? '#d8b25e' : '#4a2a14';
+    ctx.strokeStyle = i % 2 === 0 ? '#c29b55' : '#3e2412';
     ctx.lineWidth = 4;
     ctx.beginPath();
     ctx.arc(cx, cy, 34, Math.PI * 0.65, Math.PI * 2.35);
@@ -261,6 +261,11 @@ export function plasterMaps(scene: Scene): PbrMaps {
         ht -= k * 0.4;
       }
       if (v > 0.9) s *= 0.85 + fbm(u, v, 30, 2, 204) * 0.2; // Spritzer vom Sand
+      // Von der Sonne ausgeblichen: Farben ziehen fleckig zum Putzton
+      const fade = Math.min(0.45, Math.max(0, fbm(u * 1.5, v, 5, 3, 205) - 0.35) * 1.2);
+      img.data[i] = img.data[i] * (1 - fade) + 205 * fade;
+      img.data[i + 1] = img.data[i + 1] * (1 - fade) + 188 * fade;
+      img.data[i + 2] = img.data[i + 2] * (1 - fade) + 156 * fade;
       img.data[i] = clamp255(img.data[i] * s);
       img.data[i + 1] = clamp255(img.data[i + 1] * s);
       img.data[i + 2] = clamp255(img.data[i + 2] * s);

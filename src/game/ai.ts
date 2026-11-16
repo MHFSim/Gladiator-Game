@@ -41,11 +41,64 @@ export class AiController {
     private readonly foeOf: () => Fighter | null,
     levelIndex: number,
   ) {
-    this.level = COMBAT.ai[Math.max(0, Math.min(COMBAT.ai.length - 1, levelIndex))];
+    this.base = COMBAT.ai[Math.max(0, Math.min(COMBAT.ai.length - 1, levelIndex))];
+    this.level = this.base;
   }
 
+  private base: AiLevel = COMBAT.ai[0];
+  private style = '';
+
   setLevel(i: number): void {
-    this.level = COMBAT.ai[Math.max(0, Math.min(COMBAT.ai.length - 1, i))];
+    this.base = COMBAT.ai[Math.max(0, Math.min(COMBAT.ai.length - 1, i))];
+    this.applyStyle();
+  }
+
+  /**
+   * Kampfstil der Klasse, dazu ein wenig eigenes Temperament:
+   * Thraex stürmt, Murmillo mauert und stößt, Retiarius tänzelt und weicht aus, Hoplomachus hält Abstand mit Wucht,
+   * Secutor jagt, Provocator bleibt ausgewogen.
+   */
+  setStyle(cls: string): void {
+    this.style = cls;
+    this.mood = 0.85 + Math.random() * 0.3;
+    this.applyStyle();
+  }
+
+  private mood = 1;
+
+  private applyStyle(): void {
+    const L = { ...this.base };
+    const add = (k: keyof AiLevel, v: number) => {
+      if (k !== 'name' && typeof L[k] === 'number') (L[k] as number) = Math.max(0, Math.min(1, (L[k] as number) + v));
+    };
+    switch (this.style) {
+      case 'thraex':
+        add('aggression', 0.15);
+        add('combo', 0.12);
+        add('block', -0.08);
+        break;
+      case 'murmillo':
+        add('block', 0.12);
+        add('bash', 0.15);
+        add('aggression', -0.05);
+        break;
+      case 'retiarius':
+        add('dodge', 0.18);
+        add('block', -0.12);
+        add('aggression', -0.06);
+        break;
+      case 'hoplomachus':
+        add('heavy', 0.12);
+        add('parry', 0.04);
+        break;
+      case 'secutor':
+        add('aggression', 0.1);
+        add('punish', 0.12);
+        break;
+    }
+    L.aggression = Math.max(0, Math.min(1, L.aggression * this.mood));
+    L.react = this.base.react * (2 - this.mood);
+    this.level = L;
   }
 
   private schedule(at: number, fn: () => void): void {

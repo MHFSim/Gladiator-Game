@@ -1,3 +1,4 @@
+import { embers } from './fire';
 import {
   Color3,
   Color4,
@@ -59,6 +60,8 @@ export interface Arena {
   play: { a: number; b: number };
   /** Mauer innen, für die Kamera */
   wall: { a: number; b: number };
+  /** Höhe der Podiumsmauer (Fackeln obenauf) */
+  podiumHeight: number;
   update(dt: number, daylight: number): void;
 }
 
@@ -360,6 +363,7 @@ export function buildCapua(scene: Scene, env: Environment, q: QualityProfile): A
     sm.direction2 = new Vector3(0.1, 1, 0.1);
     sm.blendMode = ParticleSystem.BLENDMODE_STANDARD;
     sm.start();
+    embers(scene, new Vector3(bx, 1.25, bz), q);
 
     let light: PointLight | null = null;
     if (q.tier === 'ultra' || q.tier === 'high') {
@@ -371,31 +375,7 @@ export function buildCapua(scene: Scene, env: Environment, q: QualityProfile): A
     fires.push({ light, ps, base: Math.random() * 10 });
   }
 
-  /* ---------- Staub in der Luft ---------- */
-  if (q.dust > 0) {
-    const dustTex = flareTexture(scene, 'dust', 'rgba(255,240,210,0.9)', 'rgba(255,230,190,0.25)');
-    const dust = new ParticleSystem('dust', q.dust, scene);
-    dust.particleTexture = dustTex;
-    dust.emitter = new Vector3(0, 0, 0);
-    dust.minEmitBox = new Vector3(-14, 0.2, -14);
-    dust.maxEmitBox = new Vector3(14, 6, 14);
-    dust.minSize = 0.015;
-    dust.maxSize = 0.04;
-    dust.minLifeTime = 5;
-    dust.maxLifeTime = 10;
-    dust.emitRate = q.dust / 7;
-    dust.color1 = new Color4(1, 0.95, 0.85, 0.5);
-    dust.color2 = new Color4(1, 0.9, 0.75, 0.3);
-    dust.colorDead = new Color4(1, 0.9, 0.8, 0);
-    dust.direction1 = new Vector3(-0.08, 0.02, -0.05);
-    dust.direction2 = new Vector3(0.08, 0.06, 0.05);
-    dust.minEmitPower = 0.5;
-    dust.maxEmitPower = 1;
-    dust.gravity = new Vector3(0.03, 0, 0.01);
-    dust.blendMode = ParticleSystem.BLENDMODE_ADD;
-    dust.preWarmCycles = 200;
-    dust.start();
-  }
+  // Staub in der Luft kommt jetzt aus der Kino-Ebene (render/cinema.ts)
 
   /* ---------- Landschaft: Hügel, Vesuv, Zypressen ---------- */
   buildLandscape(scene);
@@ -407,13 +387,14 @@ export function buildCapua(scene: Scene, env: Environment, q: QualityProfile): A
     crowd,
     play: { a: ARENA.playRadius, b: ARENA.playRadius },
     wall: { a: ARENA.radius, b: ARENA.radius },
+    podiumHeight: ARENA.wallHeight,
     update(dt: number, daylight: number) {
       t += dt;
       crowd.update(dt);
       for (const f of fires) {
         if (!f.light) continue;
         const flick = 0.85 + Math.sin(t * 13 + f.base) * 0.08 + Math.sin(t * 27.3 + f.base * 2) * 0.06;
-        f.light.intensity = (2.5 + (1 - daylight) * 10) * flick;
+        f.light.intensity = (2.5 + (1 - daylight) * 3.5) * flick;
       }
     },
   };

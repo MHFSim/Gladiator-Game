@@ -109,16 +109,20 @@ export class Fx {
     this.sparks.particleTexture = sparkTex;
     this.sparks.emitter = Vector3.Zero();
     this.sparks.emitRate = 0;
-    this.sparks.minSize = 0.02;
-    this.sparks.maxSize = 0.05;
-    this.sparks.minLifeTime = 0.15;
-    this.sparks.maxLifeTime = 0.4;
-    this.sparks.color1 = new Color4(1, 0.9, 0.6, 1);
+    // Glühende Streifen statt Punkte, heller als alles andere (blühen im Bloom)
+    this.sparks.minSize = 0.012;
+    this.sparks.maxSize = 0.03;
+    this.sparks.minScaleY = 4;
+    this.sparks.maxScaleY = 9;
+    this.sparks.billboardMode = ParticleSystem.BILLBOARDMODE_STRETCHED;
+    this.sparks.minLifeTime = 0.18;
+    this.sparks.maxLifeTime = 0.55;
+    this.sparks.color1 = new Color4(1.6, 1.3, 0.8, 1);
     this.sparks.color2 = new Color4(1, 0.6, 0.2, 1);
     this.sparks.colorDead = new Color4(1, 0.3, 0, 0);
     this.sparks.gravity = new Vector3(0, -6, 0);
-    this.sparks.minEmitPower = 2;
-    this.sparks.maxEmitPower = 6;
+    this.sparks.minEmitPower = 3;
+    this.sparks.maxEmitPower = 9;
     this.sparks.blendMode = ParticleSystem.BLENDMODE_ADD;
     this.sparks.start();
 
@@ -152,6 +156,7 @@ export class Fx {
   }
 
   update(dt: number): void {
+    this.tickGlint(dt);
     for (const p of this.pools) {
       if (p.t >= 1) continue;
       p.t = Math.min(1, p.t + dt / 5);
@@ -242,7 +247,65 @@ export class Fx {
     this.sparks.emitter = p.clone();
     this.sparks.direction1 = new Vector3(-1, -0.2, -1);
     this.sparks.direction2 = new Vector3(1, 1.4, 1);
-    this.sparks.manualEmitCount = 40;
+    this.sparks.manualEmitCount = 55;
+  }
+
+  private glintMesh: Mesh | null = null;
+  private glintT = 0;
+
+  /** Aufblitzen an der Waffenspitze: Warnung vor einem Wuchtschlag */
+  glint(node: TransformNode): void {
+    if (!this.glintMesh) {
+      const tex = new DynamicTexture('glintTex', { width: 128, height: 128 }, this.scene, true);
+      const c = tex.getContext() as unknown as CanvasRenderingContext2D;
+      c.clearRect(0, 0, 128, 128);
+      const g = c.createRadialGradient(64, 64, 0, 64, 64, 30);
+      g.addColorStop(0, 'rgba(255,255,240,1)');
+      g.addColorStop(1, 'rgba(255,220,150,0)');
+      c.fillStyle = g;
+      c.fillRect(0, 0, 128, 128);
+      // Vierstrahliger Stern
+      for (const [w, h] of [
+        [128, 6],
+        [6, 128],
+      ]) {
+        const lg = c.createRadialGradient(64, 64, 0, 64, 64, 64);
+        lg.addColorStop(0, 'rgba(255,250,230,0.95)');
+        lg.addColorStop(1, 'rgba(255,220,160,0)');
+        c.fillStyle = lg;
+        c.fillRect(64 - w / 2, 64 - h / 2, w, h);
+      }
+      tex.hasAlpha = true;
+      tex.update(false);
+      const m = MeshBuilder.CreatePlane('glint', { size: 0.6 }, this.scene);
+      const mat = new PBRMaterial('glintMat', this.scene);
+      mat.unlit = true;
+      mat.albedoTexture = tex;
+      mat.opacityTexture = tex;
+      mat.emissiveColor = new Color3(1.6, 1.4, 1.1);
+      mat.alphaMode = 1; // additiv
+      mat.disableDepthWrite = true;
+      m.material = mat;
+      m.billboardMode = Mesh.BILLBOARDMODE_ALL;
+      m.isPickable = false;
+      m.setEnabled(false);
+      this.glintMesh = m;
+    }
+    const m = this.glintMesh;
+    m.parent = node;
+    m.position.setAll(0);
+    m.setEnabled(true);
+    this.glintT = 0.4;
+  }
+
+  private tickGlint(dt: number): void {
+    if (!this.glintMesh || this.glintT <= 0) return;
+    this.glintT -= dt;
+    const k = Math.max(0, this.glintT / 0.4);
+    const sc = Math.sin(k * Math.PI) * 1.3;
+    this.glintMesh.scaling.setAll(sc / Math.max(1e-3, this.glintMesh.parent ? (this.glintMesh.parent as TransformNode).absoluteScaling.x : 1));
+    this.glintMesh.rotation.z += dt * 3;
+    if (this.glintT <= 0) this.glintMesh.setEnabled(false);
   }
 
   /** Flecken im Sand: drei Formen, je eine Instanz-Gruppe (wenige Zeichenaufrufe auch bei vielen Flecken) */

@@ -26,7 +26,7 @@ const DEFAULTS: Settings = {
   scheme: 'gestures',
   quality: 'auto',
   renderer: 'webgl2',
-  timeOfDay: 16.5,
+  timeOfDay: 18.2,
   battery: false,
   sound: true,
   gore: 'full',
@@ -43,7 +43,15 @@ const DEFAULTS: Settings = {
 export function loadSettings(): Settings {
   try {
     const raw = localStorage.getItem(KEY);
-    if (raw) return { ...DEFAULTS, ...JSON.parse(raw) };
+    if (raw) {
+      const s = { ...DEFAULTS, ...JSON.parse(raw) } as Settings & { v6?: boolean };
+      // Version 6: neuer Standard ist die goldene Abendstunde (nur wenn noch die alte Standardzeit eingestellt war)
+      if (!s.v6) {
+        if (s.timeOfDay === 16.5) s.timeOfDay = 18.2;
+        s.v6 = true;
+      }
+      return s;
+    }
   } catch {
     /* Standardwerte nutzen */
   }

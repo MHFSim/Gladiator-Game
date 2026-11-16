@@ -742,6 +742,31 @@ export class Gladiator {
   private tierMats = new Map<string, PBRMaterial>();
   /** Spitze der Waffe (für die Waffenspur) */
   tip: TransformNode | null = null;
+  private flashT = 0;
+  private flashMeshes: AbstractMesh[] = [];
+
+  /** Kurzes Aufleuchten des Körpers bei einem Treffer (rot) oder einer Parade (gold) */
+  hitFlash(kind: 'hit' | 'parry' = 'hit'): void {
+    this.flashMeshes = this.body.filter((m) => !m.isDisposed() && m.isEnabled());
+    const c = kind === 'hit' ? new Color3(0.85, 0.08, 0.04) : new Color3(1, 0.8, 0.35);
+    for (const m of this.flashMeshes) {
+      m.renderOverlay = true;
+      m.overlayColor = c;
+      m.overlayAlpha = kind === 'hit' ? 0.42 : 0.3;
+    }
+    this.flashT = 0.14;
+  }
+
+  /** Aufleuchten abklingen lassen (jedes Bild) */
+  tickFlash(dt: number): void {
+    if (this.flashT <= 0) return;
+    this.flashT -= dt;
+    const k = Math.max(0, this.flashT / 0.14);
+    for (const m of this.flashMeshes) {
+      m.overlayAlpha *= k > 0 ? 0.82 : 0;
+      if (k <= 0) m.renderOverlay = false;
+    }
+  }
   look: Look | null = null;
 
   private metal(kind: 'bronze' | 'iron', tier: number): PBRMaterial {

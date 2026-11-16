@@ -16,6 +16,7 @@ import {
 import type { QualityProfile } from '../core/quality';
 import type { Environment } from '../render/environment';
 import { box, disc, GeoBuilder, ringBand, ringFlat, ringSlope } from '../render/geometry';
+import { embers } from './fire';
 import { flareTexture, plasterMaps, sandMaps, stoneMaps, tileMaps, woodMaps, type PbrMaps } from '../render/textures';
 import type { Arena, Obstacle } from './capua';
 import { buildCrowd, type Stands } from './crowd';
@@ -84,7 +85,10 @@ export function buildColosseum(scene: Scene, env: Environment, q: QualityProfile
   const matWood = pbr(scene, 'wood', woodMaps(scene), 0.75);
   const matTiles = pbr(scene, 'tiles', tileMaps(scene), 0.7);
   const matDark = new StandardMaterial('tunnel', scene);
-  matDark.diffuseColor = new Color3(0.03, 0.025, 0.02);
+  // Dunkle Gänge, hinten schwach von Fackeln erhellt
+  matDark.diffuseColor = new Color3(0, 0, 0);
+  matDark.emissiveColor = new Color3(0.07, 0.045, 0.03);
+  matDark.disableLighting = true;
   matDark.specularColor = Color3.Black();
   const matBronze = new PBRMaterial('bronzeRail', scene);
   matBronze.albedoColor = new Color3(0.55, 0.36, 0.18);
@@ -314,6 +318,7 @@ export function buildColosseum(scene: Scene, env: Environment, q: QualityProfile
     ps.minEmitPower = 0.3;
     ps.maxEmitPower = 0.8;
     ps.start();
+    embers(scene, new Vector3(bx, 1.35, bz), q);
     let light: PointLight | null = null;
     if (q.tier === 'ultra' || q.tier === 'high') {
       light = new PointLight('fireLight', new Vector3(bx, 1.9, bz), scene);
@@ -340,13 +345,14 @@ export function buildColosseum(scene: Scene, env: Environment, q: QualityProfile
     crowd,
     play: { a: (R - 0.8) * SX, b: R - 0.8 },
     wall: { a: R * SX, b: R },
+    podiumHeight: H,
     update(dt: number, daylight: number) {
       t += dt;
       crowd.update(dt);
       for (const f of fires) {
         if (!f.light) continue;
         const flick = 0.85 + Math.sin(t * 13 + f.base) * 0.08 + Math.sin(t * 27.3 + f.base * 2) * 0.06;
-        f.light.intensity = (2.5 + (1 - daylight) * 10) * flick;
+        f.light.intensity = (2.5 + (1 - daylight) * 3.5) * flick;
       }
     },
   };

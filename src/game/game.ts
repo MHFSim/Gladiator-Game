@@ -4,6 +4,8 @@ import type { AnimCmd, Gladiator, SeverPart } from '../gladiators/gladiator';
 import type { Action, TouchInput } from '../input/touch';
 import type { Transport } from '../net/transport';
 import type { Sound } from '../audio/sound';
+import type { Cinema } from '../render/cinema';
+import type { GroundFx, Walker } from './ground';
 import { CLASSES, type ClassId } from '../data/classes';
 import { buildNet } from '../gladiators/gear';
 import { AiController } from './ai';
@@ -395,6 +397,7 @@ export class Game implements FighterEvents {
         const ai = new AiController(f, () => f.target, setup.fighters[i].ai ?? this.difficulty);
         ai.special = () => this.special(f);
         ai.specialKind = CLASSES[f.cls].special.id;
+        ai.setStyle(f.cls);
         ai.threat = () => this.threatFor(f);
         this.ais.set(f, ai);
       }
@@ -428,6 +431,11 @@ export class Game implements FighterEvents {
   private slowmo = 0;
   private pendingResult: Omit<MatchResult, 'verdict'> | null = null;
   blockAssist: 'off' | 'show' | 'auto' = 'show';
+  /** Kino-Ebene (Lichtstrahlen, Tiefenschärfe, Farbstimmung) */
+  cinema: Cinema | null = null;
+  /** Sand: Kontaktschatten, Spuren, Staub */
+  ground: GroundFx | null = null;
+  private prevMode = new Map<Fighter, string>();
 
   /** Brutalität: voll, reduziert, aus */
   setGore(level: GoreLevel): void {
@@ -464,7 +472,10 @@ export class Game implements FighterEvents {
     f.kit = kit;
     f.g.equip({ cls, tiers });
     const ai = this.ais.get(f);
-    if (ai) ai.specialKind = CLASSES[cls].special.id;
+    if (ai) {
+      ai.specialKind = CLASSES[cls].special.id;
+      ai.setStyle(cls);
+    }
   }
 
   /* ---------- Match ---------- */
@@ -545,6 +556,7 @@ export class Game implements FighterEvents {
         const ai = new AiController(f, () => f.target, this.difficulty);
         ai.special = () => this.special(f);
         ai.specialKind = CLASSES[f.cls].special.id;
+        ai.setStyle(f.cls);
         ai.threat = () => this.threatFor(f);
         this.ais.set(f, ai);
         this.remoteIn.delete(f);
@@ -597,6 +609,7 @@ export class Game implements FighterEvents {
     this.gore.clear(this.fighters.map((f) => f.g));
     this.weaponBlood.clear();
     this.life.reset();
+    this.ground?.clear();
     for (const f of this.fighters) {
       f.g.setWeaponBlood(0);
       if (this.role !== 'guest') f.refill();
@@ -660,6 +673,7 @@ export class Game implements FighterEvents {
 
   private sparks(p: Vector3): void {
     this.fx.sparksAt(p);
+    this.ground?.sparkLight(p);
     this.send('ev', { k: 'sparks', p: [p.x, p.y, p.z] });
   }
 
@@ -702,11 +716,13 @@ export class Game implements FighterEvents {
   }
 
   private applyHitFx(A: Fighter, D: Fighter, kind: HitFx): void {
+    D.g.hitFlash(kind === 'parry' ? 'parry' : 'hit');
     const me = this.player;
     let f: 'hurt' | 'parry' | 'strike' | null = null;
     if (kind === 'parry') f = D === me ? 'parry' : null;
     else if (D === me) f = 'hurt';
     else if (A === me && kind === 'big') f = 'strike';
+    if (kind === 'big' || kind === 'parry') this.cinema?.pulse(kind === 'big' ? 0.9 : 0.5);
     if (!f) return;
     this.hud.flash?.(f);
     this.fovKick = Math.max(this.fovKick, f === 'strike' ? 0.09 : f === 'hurt' ? 0.06 : 0.04);
@@ -811,6 +827,7 @@ export class Game implements FighterEvents {
         break;
       case 'sparks':
         this.fx.sparksAt(v3(e.p));
+        this.ground?.sparkLight(v3(e.p));
         break;
       case 'float': {
         const o = e.o as number;
@@ -860,6 +877,11 @@ export class Game implements FighterEvents {
         this.updateScore();
         if (e.w === this.meIdx) this.hud.hint('Du bist gefallen – schau zu, wie dein Team kämpft', 3);
         break;
+      case 'glint': {
+        const t = this.byIdx(e.w as number).g.tip;
+        if (t) this.fx.glint(t);
+        break;
+      }
       case 'wave':
         this.life.wave = e.n as number;
         this.updateScore();
@@ -1050,6 +1072,7 @@ export class Game implements FighterEvents {
     this.gore.update(dt);
     this.bleed(dt);
     this.updateProjectiles(dt);
+    this.updateGround(dt);
     this.updateCamera(dt);
     this.updateHud();
   }
@@ -1081,6 +1104,11 @@ export class Game implements FighterEvents {
   /* ---------- Ereignisse der Kämpfer ---------- */
 
   attackStart(f: Fighter, a: ActiveAttack): void {
+    // Wuchtschlag: die Waffe blitzt auf – Zeit zum Ausweichen oder Parieren
+    if (a.heavy && f.g.tip) {
+      this.fx.glint(f.g.tip);
+      this.send('ev', { k: 'glint', w: this.idx(f) });
+    }
     // Das Ziel (falls KI) bekommt den Angriff mit, wie ein Mensch es sehen würde
     const v = f.target;
     if (v) this.ais.get(v)?.onFoeAttack(a, this.now, f);
@@ -1389,7 +1417,10 @@ export class Game implements FighterEvents {
     if (killer) killer.kills++;
     this.impulse(D, push.scale(1.5));
     this.setHitStop(0.25);
-    window.setTimeout(() => this.sfx('fall'), 450);
+    window.setTimeout(() => {
+      this.sfx('fall');
+      this.ground?.puff(D.pos, 1.6, push);
+    }, 450);
     window.setTimeout(() => this.bloodPool(D), 1200);
     if (killer) this.deed('kill', killer);
     else this.spec.kick(1);
@@ -1921,6 +1952,11 @@ export class Game implements FighterEvents {
   private lastFoeLabel = '';
 
   update(rawDt: number, daylight: number, freeze = false): void {
+    if (this.ground) this.ground.daylight = daylight;
+    if (this.cinema) {
+      this.cinema.cinematic(this.spec.inCeremony || this.slowmo > 0);
+      this.cinema.update(Math.min(rawDt, 0.05), this.camLook);
+    }
     if (this.role === 'guest') {
       this.updateGuest(Math.min(rawDt, 0.05));
       this.arena.update(Math.min(rawDt, 0.05), daylight);
@@ -1971,8 +2007,35 @@ export class Game implements FighterEvents {
     this.gore.update(dt);
     this.bleed(dt);
     this.updateProjectiles(dt);
+    this.updateGround(dt);
     if (!freeze) this.updateCamera(dt);
     this.updateHud();
+  }
+
+  /** Sand: Kontaktschatten, Fußspuren und Staub bei Rolle, Sturz und Wucht */
+  private updateGround(dt: number): void {
+    for (const f of this.fighters) f.g.tickFlash(dt);
+    const gr = this.ground;
+    if (!gr) return;
+    const w: Walker[] = [];
+    for (const f of this.fighters) {
+      const sp = Math.hypot(f.vel.x, f.vel.z);
+      w.push({ key: f, pos: f.pos, heading: f.g.heading, speed: f.mode === 'dead' ? 0 : sp, foot: 1, stride: 0.62, beast: false });
+      const prev = this.prevMode.get(f);
+      if (prev !== f.mode) {
+        this.prevMode.set(f, f.mode);
+        if (f.mode === 'roll') gr.puff(f.pos, 1.0, f.vel);
+        else if (f.mode === 'stagger' && prev !== 'stagger') gr.puff(f.pos, 0.7, f.vel);
+        else if (f.mode === 'special' && f.dashUntil > this.now) gr.puff(f.pos, 1.0, f.dashDir);
+      }
+    }
+    for (const b of this.life.beasts) {
+      if (b.mode === 'gone') continue;
+      const sp = Math.hypot(b.vel.x, b.vel.z);
+      const bull = b.kind === 'bull';
+      w.push({ key: b, pos: b.pos, heading: b.heading, speed: b.alive ? sp : 0, foot: bull ? 0.9 : 0.55, stride: bull ? 0.8 : 0.45, beast: true });
+    }
+    gr.update(dt, w);
   }
 
   private pct(f: Fighter, k: 'hp' | 'st'): number {
@@ -2252,12 +2315,15 @@ export class Game implements FighterEvents {
       const toFoe = foe.pos.subtract(p.pos);
       toFoe.y = 0;
       const want = Math.atan2(toFoe.x, toFoe.z);
-      this.yaw += angleDiff(this.yaw, want) * Math.min(1, dt * 6);
+      this.yaw += angleDiff(this.yaw, want) * (1 - Math.exp(-dt * 5));
       const fw = this.camForward();
       const right = new Vector3(fw.z, 0, -fw.x);
-      const back = this.fighters.length > 2 ? 3.6 : 3.0;
-      camPos = target.subtract(fw.scale(back)).add(new Vector3(0, this.fighters.length > 2 ? 1.1 : 0.8, 0)).add(right.scale(1.45));
-      const mid = Vector3.Lerp(p.pos, foe.pos, 0.72);
+      // Je weiter der Gegner weg ist, desto mehr zieht die Kamera zurück und hoch
+      const gap = Math.max(0, Math.min(1.6, (toFoe.length() - 2.5) * 0.3));
+      const back = (this.fighters.length > 2 ? 3.6 : 3.0) + gap;
+      const up = (this.fighters.length > 2 ? 1.1 : 0.8) + gap * 0.45;
+      camPos = target.subtract(fw.scale(back)).add(new Vector3(0, up, 0)).add(right.scale(1.35));
+      const mid = Vector3.Lerp(p.pos, foe.pos, 0.66);
       look = mid.add(new Vector3(0, 1.1, 0));
     } else {
       if (d.x !== 0 || d.y !== 0) this.lastDrag = this.now;
@@ -2276,6 +2342,8 @@ export class Game implements FighterEvents {
         .add(right.scale(0.45));
       look = target.add(right.scale(0.45));
     }
+    // Nicht in Säulen, Pfählen oder Feuerbecken landen: zur Figur heranziehen
+    if (!this.spec.inCeremony) camPos = this.avoidObstacles(target, camPos);
     const wa = this.arena.wall;
     const kc = (camPos.x / (wa.a - 0.4)) ** 2 + (camPos.z / (wa.b - 0.4)) ** 2;
     if (kc > 1) {
@@ -2291,14 +2359,39 @@ export class Game implements FighterEvents {
     this.fovKick = Math.max(0, this.fovKick - dt * 0.35);
     this.camera.fov = this.baseFov - this.fovKick;
     this.updateTrails();
-    this.camera.position.copyFrom(Vector3.Lerp(this.camera.position, camPos, Math.min(1, dt * 10)));
-    this.camLook = Vector3.Lerp(this.camLook, look, Math.min(1, dt * 10));
-    this.camera.setTarget(this.camLook);
+    // Weich nachführen, unabhängig von der Bildrate, dazu ein leichtes Atmen wie aus der Hand
+    this.camT += dt;
+    const sway = new Vector3(Math.sin(this.camT * 0.9) * 0.012, Math.sin(this.camT * 1.3 + 1) * 0.01, Math.cos(this.camT * 0.7) * 0.01);
+    this.camera.position.copyFrom(Vector3.Lerp(this.camera.position, camPos, 1 - Math.exp(-dt * 9)));
+    this.camLook = Vector3.Lerp(this.camLook, look, 1 - Math.exp(-dt * 11));
+    this.camera.setTarget(this.camLook.add(sway));
   }
 
   /** Hinweis von außen (Menü, Turnier) */
   hudHint(text: string, sec = 3): void {
     this.hud.hint(text, sec);
+  }
+
+  private camT = 0;
+
+  /** Kamera vor Hindernissen zwischen Figur und Kamera abfangen */
+  private avoidObstacles(from: Vector3, to: Vector3): Vector3 {
+    let t = 1;
+    const dx = to.x - from.x;
+    const dz = to.z - from.z;
+    const len2 = dx * dx + dz * dz;
+    if (len2 < 1e-4) return to;
+    for (const o of this.arena.obstacles) {
+      // Nächster Punkt der Strecke zum Hindernis
+      const k = Math.max(0, Math.min(1, ((o.x - from.x) * dx + (o.z - from.z) * dz) / len2));
+      const px = from.x + dx * k - o.x;
+      const pz = from.z + dz * k - o.z;
+      if (px * px + pz * pz < (o.r + 0.25) ** 2) t = Math.min(t, Math.max(0.35, k - 0.08));
+    }
+    if (t >= 1) return to;
+    const out = Vector3.Lerp(from, to, t);
+    out.y = to.y;
+    return out;
   }
 
   /** Für Screenshots: feste Kameraposition */

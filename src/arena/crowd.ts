@@ -258,8 +258,12 @@ export function buildCrowd(scene: Scene, env: Environment, q: QualityProfile, se
         const s = Math.sin(a);
         const yaw = Math.atan2(-c / sx, -s) + (rnd() - 0.5) * 0.5;
         const t = senate ? TOGAS[rnd() < 0.8 ? 2 : Math.floor(rnd() * 3)] : TOGAS[Math.floor(rnd() * TOGAS.length)];
-        const v = 0.85 + rnd() * 0.3;
-        place(c * rc * sx, y, s * rc, yaw, 0.9 + rnd() * 0.18, [t[0] * v, t[1] * v, t[2] * v], rnd());
+        // Etwas gedämpfte, natürliche Farben; hintere Reihen leicht dunkler (Tiefe)
+        const v = (0.82 + rnd() * 0.3) * (1 - (i / Math.max(1, sec.steps)) * 0.12);
+        const lum = t[0] * 0.3 + t[1] * 0.55 + t[2] * 0.15;
+        const sat = 0.78;
+        const col: [number, number, number] = [(lum + (t[0] - lum) * sat) * v, (lum + (t[1] - lum) * sat) * v, (lum + (t[2] - lum) * sat) * v];
+        place(c * rc * sx, y, s * rc, yaw, 0.9 + rnd() * 0.18, col, rnd());
       }
     }
   });

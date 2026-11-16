@@ -5,7 +5,26 @@ Gebaut mit [Babylon.js 9](https://www.babylonjs.com), läuft komplett über GitH
 
 **Spielen:** https://mhfsim.github.io/Gladiator-Game/
 
-## Stand: Phase 5 – Spielmodi und Arenaleben
+## Stand: Phase 6 – Grafik und Spielgefühl überarbeitet
+
+**Licht und Atmosphäre (Phase 6)**
+- Kino-Farbstimmung: warme Lichter, kühle Schatten, abends golden; in Zeitlupe und beim Urteil bleichen die Farben aus.
+- Lichtstrahlen der Sonne durch Bögen, Masten und Sonnensegel (Ultra und Hoch).
+- Tiefenschärfe: der Kampf scharf, die Ränge weich, in Kinomomenten stärker (Ultra). Leichte Objektiv-Farbsäume, die bei harten Treffern anziehen.
+- Schwebender Staub um die Kamera, der im Gegenlicht leuchtet; mehr Luftperspektive in der Tiefe.
+- Nachts Mondlicht und ein Ring aus Fackeln auf der Podiumsmauer, Glut steigt aus den Feuerbecken.
+- Standard-Tageszeit ist jetzt die goldene Abendstunde (18:12).
+
+**Arena, Effekte, Spielgefühl (Phase 6)**
+- Kontaktschatten unter Kämpfern und Tieren, Fußspuren im Sand, aufwirbelnder Sand bei Rolle, Sturz, Schildramme und galoppierenden Tieren.
+- Funken als glühende Streifen mit kurzem Lichtblitz; getroffene Körper blitzen rot auf, Paraden golden.
+- Wuchtschläge kündigen sich mit einem Aufblitzen an der Waffenspitze an.
+- Wandmalereien gedämpft und von der Sonne ausgeblichen, natürlichere Farben im Publikum, Gänge im Kolosseum nicht mehr pechschwarz.
+- Kamera: weicher und bildratenunabhängig, zieht bei Abstand zurück, weicht Säulen und Feuerbecken aus, leichtes Atmen wie aus der Hand.
+- KI mit Kampfstil je Klasse und eigenem Temperament (Thraex stürmt, Murmillo mauert, Retiarius tänzelt …).
+- Ultra hält etwa 40 Bilder pro Sekunde, bevor die Auflösung sinkt (Schönheit zuerst).
+
+## Phase 5 – Spielmodi und Arenaleben
 
 **Spielmodi (Phase 5)**
 - Duell, 2 gegen 2, 3 gegen 3, Jeder gegen jeden mit 4 oder 8 Kämpfern – im Training und im Mehrspieler.
