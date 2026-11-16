@@ -44,7 +44,7 @@ export class Spectacle {
   excite = 0.2;
 
   constructor(
-    private readonly crowd: Crowd,
+    private readonly crowdOf: () => Crowd,
     private readonly sound: Sound,
     private readonly h: SpectacleHooks,
   ) {}
@@ -60,7 +60,7 @@ export class Spectacle {
     this.resetRound();
     for (const f of [this.h.player(), this.h.foe()]) f.favor = 50;
     this.cer = null;
-    this.crowd.vote = 0;
+    this.crowdOf().vote = 0;
     this.h.vote(null);
     this.h.thumb(null);
   }
@@ -101,7 +101,7 @@ export class Spectacle {
     if ((this.good.get(f) ?? 0) > now) {
       this.add(f, 9);
       this.kick(0.8);
-      if (f.favor > 70) this.crowd.wave();
+      if (f.favor > 70) this.crowdOf().wave();
       this.h.float(f, 'Das Volk tobt!', true);
     } else if (losing) {
       this.add(f, -6);
@@ -137,7 +137,7 @@ export class Spectacle {
             f.favor = 70;
             this.h.heal(f, Math.round(f.stats.hpMax * 0.15));
             this.kick(0.6);
-            this.crowd.wave();
+            this.crowdOf().wave();
           } else if (f.favor <= 8 && !this.peltUsed.has(f)) {
             this.peltUsed.add(f);
             f.favor = 25;
@@ -149,7 +149,7 @@ export class Spectacle {
       this.excite = Math.min(1, 0.15 + this.spike * 0.85 + (this.cer ? 0.25 : 0));
       this.updateCeremony(dt);
     }
-    this.crowd.excite = this.excite;
+    this.crowdOf().excite = this.excite;
     this.sound.update(dt, this.excite);
   }
 
@@ -180,7 +180,7 @@ export class Spectacle {
             fadeIn: 0.3,
             onEnd: () => a.play('get_up', { range: [0.84, 0.845], speed: 0.001, loop: true, fadeIn: 0.05 }),
           });
-          this.crowd.vote = 1;
+          this.crowdOf().vote = 1;
           this.sound.gasp();
           this.h.vote(0.5, 'Das Volk entscheidet …');
           this.h.send({ k: 'cer', ph: 'vote' });
@@ -196,7 +196,7 @@ export class Spectacle {
           c.verdict = Math.random() < c.p ? 'missio' : 'iugula';
           c.phase = 'verdict';
           c.t = 0;
-          this.crowd.vote = 0;
+          this.crowdOf().vote = 0;
           this.h.vote(null);
           this.h.thumb(c.verdict);
           this.h.send({ k: 'cer', ph: 'verdict', v: c.verdict });
@@ -260,7 +260,7 @@ export class Spectacle {
       case 'vote':
         if (this.cer && this.cer.phase !== 'vote') {
           this.cer.phase = 'vote';
-          this.crowd.vote = 1;
+          this.crowdOf().vote = 1;
           this.sound.gasp();
         }
         this.h.vote(typeof e.v === 'number' ? e.v : 0.5, 'Das Volk entscheidet …');
@@ -270,7 +270,7 @@ export class Spectacle {
           this.cer.phase = 'verdict';
           this.cer.verdict = e.v as Verdict;
         }
-        this.crowd.vote = 0;
+        this.crowdOf().vote = 0;
         this.h.vote(null);
         this.h.thumb(e.v as Verdict);
         this.sound.roar(1, 2.5);

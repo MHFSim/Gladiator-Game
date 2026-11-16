@@ -194,9 +194,21 @@ const TOGAS: [number, number, number][] = [
   [0.5, 0.15, 0.25], // weinrot
 ];
 
-export function buildCrowd(scene: Scene, env: Environment, q: QualityProfile, stands: Stands): Crowd {
+export interface CrowdOptions {
+  /** Ellipse: x-Streckung */
+  sx?: number;
+  /** Kaiserloge: Grundlinie (Radius im Kreisraum) und Bodenhöhe */
+  pulvinar?: { baseR: number; floorY: number; frontY: number };
+  /** höchstens so viele Zuschauer */
+  max?: number;
+  /** Abschnitte mit weißen Togen (Senatoren) */
+  senate?: number[];
+}
+
+export function buildCrowd(scene: Scene, env: Environment, q: QualityProfile, sections: Stands[], opts: CrowdOptions = {}): Crowd {
+  const sx = opts.sx ?? 1;
   const st: CrowdState = { time: 0, excite: 0.2, wave: 0, waveAng: 0, vote: 0 };
-  const fill = { ultra: 0.95, high: 0.85, medium: 0.7, low: 0.45 }[q.tier];
+  const fillBase = { ultra: 0.95, high: 0.85, medium: 0.7, low: 0.45 }[q.tier];
   const fig = buildFigure(scene);
   const mat = new PBRMaterial('crowdMat', scene);
   mat.albedoColor = Color3.White();
@@ -220,53 +232,63 @@ export function buildCrowd(scene: Scene, env: Environment, q: QualityProfile, st
     data.push(rgb[0], rgb[1], rgb[2], skin);
   };
   const rnd = mulberry(7);
-  const box0 = { a: PULVINAR_ANGLE, half: 0.16 };
-  for (let i = 0; i < stands.steps; i++) {
-    const rIn = stands.r0 + i * stands.depth;
-    const rc = rIn + 0.5;
-    const y = stands.y0 + (i + 1) * stands.rise;
-    const n = Math.floor((Math.PI * 2 * rc) / 0.6);
-    for (let j = 0; j < n; j++) {
-      const a = ((j + (i % 2) * 0.5) / n) * Math.PI * 2 + (rnd() - 0.5) * 0.012;
-      let da = a - box0.a;
-      da -= Math.PI * 2 * Math.floor((da + Math.PI) / (Math.PI * 2));
-      if (Math.abs(da) < box0.half && i >= 1) continue;
-      if (rnd() > fill) continue;
-      const yaw = Math.atan2(-Math.cos(a), -Math.sin(a)) + (rnd() - 0.5) * 0.5;
-      const t = TOGAS[Math.floor(rnd() * TOGAS.length)];
-      const v = 0.85 + rnd() * 0.3;
-      place(Math.cos(a) * rc, y, Math.sin(a) * rc, yaw, 0.9 + rnd() * 0.18, [t[0] * v, t[1] * v, t[2] * v], rnd());
+  const pa = PULVINAR_ANGLE;
+  const pv = opts.pulvinar;
+  // Plätze zählen, um die Höchstzahl einzuhalten
+  let slots = 0;
+  for (const sec of sections) for (let i = 0; i < sec.steps; i++) slots += Math.floor((Math.PI * 2 * (sec.r0 + i * sec.depth + 0.5) * (1 + sx) * 0.5) / 0.6);
+  const fill = Math.min(fillBase, (opts.max ?? 1e9) / Math.max(1, slots));
+  sections.forEach((sec, si) => {
+    const senate = opts.senate?.includes(si) ?? false;
+    for (let i = 0; i < sec.steps; i++) {
+      const rIn = sec.r0 + i * sec.depth;
+      const rc = rIn + 0.5;
+      const y = sec.y0 + (i + 1) * sec.rise;
+      const n = Math.floor((Math.PI * 2 * rc * (1 + sx) * 0.5) / 0.6);
+      for (let j = 0; j < n; j++) {
+        const a = ((j + (i % 2) * 0.5) / n) * Math.PI * 2 + (rnd() - 0.5) * 0.012;
+        if (pv) {
+          let da = a - pa;
+          da -= Math.PI * 2 * Math.floor((da + Math.PI) / (Math.PI * 2));
+          const half = (2.9 * sx) / (rc * sx);
+          if (Math.abs(da) < half && rc > pv.baseR - 0.3 && rc < pv.baseR + 4.4 && y < pv.floorY + 3.5) continue;
+        }
+        if (rnd() > fill) continue;
+        const c = Math.cos(a);
+        const s = Math.sin(a);
+        const yaw = Math.atan2(-c / sx, -s) + (rnd() - 0.5) * 0.5;
+        const t = senate ? TOGAS[rnd() < 0.8 ? 2 : Math.floor(rnd() * 3)] : TOGAS[Math.floor(rnd() * TOGAS.length)];
+        const v = 0.85 + rnd() * 0.3;
+        place(c * rc * sx, y, s * rc, yaw, 0.9 + rnd() * 0.18, [t[0] * v, t[1] * v, t[2] * v], rnd());
+      }
     }
-  }
+  });
 
   /* ---------- Kaiserloge (Pulvinar) ---------- */
-  const pa = PULVINAR_ANGLE;
+  const first = sections[0];
+  const baseR = pv?.baseR ?? first.r0 + first.depth * 1;
+  const floorY = pv?.floorY ?? first.y0 + first.rise * 6;
+  const frontY = pv?.frontY ?? first.y0;
+  const ROT = Math.atan2(-Math.cos(pa), -Math.sin(pa));
   const radial = new Vector3(Math.cos(pa), 0, Math.sin(pa));
   const tangent = new Vector3(-Math.sin(pa), 0, Math.cos(pa));
   const yawIn = Math.atan2(-radial.x, -radial.z);
-  const baseR = stands.r0 + stands.depth * 1;
-  const floorY = stands.y0 + stands.rise * 6;
-  const ROT = Math.atan2(-Math.cos(pa), -Math.sin(pa));
   const gBox = new GeoBuilder();
   const gCloth = new GeoBuilder();
-  // Boden der Loge: Block von der zweiten Stufe bis nach hinten
   const at = (along: number, out: number) => radial.scale(baseR + out).add(tangent.scale(along));
   const bc = at(0, 2.0);
-  box(gBox, bc.x, (stands.y0 + floorY) / 2, bc.z, 5.6, floorY - stands.y0, 4.0, 1.2, ROT);
-  // Brüstung vorn
+  box(gBox, bc.x, (frontY + floorY) / 2, bc.z, 5.6, floorY - frontY, 4.0, 1.2, ROT);
   const pf = at(0, 0.15);
   box(gBox, pf.x, floorY + 0.5, pf.z, 5.6, 1.0, 0.25, 1.2, ROT);
-  // Säulen
   for (const s of [-2.6, 2.6]) {
     for (const o of [0.2, 3.7]) {
       const c = at(s, o);
       box(gBox, c.x, floorY + 1.9, c.z, 0.32, 3.8, 0.32, 1.2, ROT);
     }
   }
-  // Dachbalken
   const roofC = at(0, 1.95);
   box(gBox, roofC.x, floorY + 3.9, roofC.z, 5.9, 0.3, 4.0, 1.2, ROT);
-  const boxMesh = gBox.build('pulvinar', scene);
+  const boxMesh = gBox.stretchX(sx).build('pulvinar', scene);
   const mp = new PBRMaterial('pulvinarMat', scene);
   const pm = plasterMaps(scene);
   mp.albedoTexture = pm.albedo;
@@ -278,12 +300,11 @@ export function buildCrowd(scene: Scene, env: Environment, q: QualityProfile, st
   boxMesh.material = mp;
   boxMesh.receiveShadows = true;
   env.addCaster(boxMesh);
-  // Purpurnes Tuch über der Loge und an der Brüstung
   const cc = at(0, 1.95);
   box(gCloth, cc.x, floorY + 4.1, cc.z, 6.0, 0.08, 4.2, 1, ROT);
   const dr = at(0, 0.02);
   box(gCloth, dr.x, floorY + 0.55, dr.z, 5.2, 0.8, 0.04, 1, ROT);
-  const cloth = gCloth.build('pulvinarCloth', scene);
+  const cloth = gCloth.stretchX(sx).build('pulvinarCloth', scene);
   const purple = clothMaps(scene, [92, 18, 60]);
   const mc = new PBRMaterial('purple', scene);
   mc.albedoTexture = purple.albedo;
@@ -294,17 +315,16 @@ export function buildCrowd(scene: Scene, env: Environment, q: QualityProfile, st
   cloth.material = mc;
   cloth.receiveShadows = true;
   env.addCaster(cloth);
-  // Kaiser, Gefolge, Wachen
   const seat = at(0, 1.1);
-  const emperor = new Vector3(seat.x, floorY + 0.9, seat.z);
-  place(seat.x, floorY + 0.45, seat.z, yawIn, 1.08, [0.3, 0.04, 0.2], 0.75);
+  const emperor = new Vector3(seat.x * sx, floorY + 0.9, seat.z);
+  place(seat.x * sx, floorY + 0.45, seat.z, yawIn, 1.08, [0.3, 0.04, 0.2], 0.75);
   for (const s of [-1.5, 1.5]) {
     const p = at(s, 1.3);
-    place(p.x, floorY + 0.45, p.z, yawIn + s * 0.1, 1.0, [0.82, 0.8, 0.74], 0.7);
+    place(p.x * sx, floorY + 0.45, p.z, yawIn + s * 0.1, 1.0, [0.82, 0.8, 0.74], 0.7);
   }
   for (const s of [-2.2, 2.2]) {
     const p = at(s, 2.9);
-    place(p.x, floorY + 0.45, p.z, yawIn, 1.0, [0.5, 0.08, 0.06], 0.5);
+    place(p.x * sx, floorY + 0.45, p.z, yawIn, 1.0, [0.5, 0.08, 0.06], 0.5);
   }
 
   fig.thinInstanceSetBuffer('matrix', new Float32Array(mats), 16, true);

@@ -26,11 +26,12 @@ await host.goto(`${base}?net=local&quality=low`, { waitUntil: 'load' });
 await host.waitForFunction('window.__ready === true', { timeout: 180000 });
 await host.click('#m-host');
 await sleep(500);
+if (process.env.ARENA) await host.click('#host-arena button[data-arena=colosseum]');
 const code = await host.$eval('#host-code', (e) => e.textContent);
 console.log('Code:', code);
 
 const guest = await mk('guest');
-await guest.goto(`${base}?net=local&quality=low&room=${code}`, { waitUntil: 'load' });
+await guest.goto(`${base}?net=local&quality=low&arena=capua&room=${code}`, { waitUntil: 'load' });
 await guest.waitForFunction('window.__ready === true', { timeout: 180000 });
 await host.bringToFront();
 try {
@@ -42,6 +43,11 @@ try {
 }
 await guest.waitForFunction("document.getElementById('menu').hidden === true", { timeout: 60000 });
 console.log('Beide im Kampf. Rollen:', await host.evaluate('window.__game.role'), await guest.evaluate('window.__game.role'));
+console.log('Arena Host/Gast:', await host.evaluate('window.__game.arenaKind'), await guest.evaluate('window.__game.arenaKind'));
+if (process.env.ARENA_ONLY) {
+  await guest.screenshot({ path: `${outDir}/net_arena_guest.png` });
+  process.exit(0);
+}
 
 const frames = (p) => p.evaluate(() => new Promise((r) => { let n = 0; const t0 = performance.now(); const f = () => { n++; if (performance.now() - t0 < 1000) requestAnimationFrame(f); else r(n); }; requestAnimationFrame(f); }));
 console.log('Bilder pro Sekunde Host/Gast:', await frames(host), await frames(guest));

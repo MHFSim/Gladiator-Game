@@ -7,7 +7,6 @@ import {
   ParticleSystem,
   PBRMaterial,
   Scene,
-  StandardMaterial,
   Texture,
   Vector3,
   type Camera,
@@ -88,7 +87,7 @@ function cloudTexture(scene: Scene, dense: boolean): DynamicTexture {
       const detail = fbm(u, v, 16, 3, seed + 5);
       const cov = dense ? 0.28 : 0.56;
       let a = Math.max(0, Math.min(1, (n - cov) / 0.22));
-      if (dense) a = Math.min(1, 0.55 + a * 0.6);
+      if (dense) a = Math.min(1, 0.78 + a * 0.4);
       const shade = 0.72 + 0.28 * Math.min(1, detail * 1.4);
       const i = (y * s + x) * 4;
       img.data[i] = img.data[i + 1] = img.data[i + 2] = Math.round(255 * shade);
@@ -100,16 +99,17 @@ function cloudTexture(scene: Scene, dense: boolean): DynamicTexture {
   return tex;
 }
 
-function radialMask(scene: Scene): DynamicTexture {
-  const s = 128;
-  const tex = new DynamicTexture('cloudMask', { width: s, height: s }, scene, false);
+/** Senkrechter Verlauf: oben deckend, zum Horizont durchsichtig */
+function horizonMask(scene: Scene): DynamicTexture {
+  const s = 64;
+  const tex = new DynamicTexture('cloudMask', { width: 4, height: s }, scene, false);
   const ctx = tex.getContext() as unknown as CanvasRenderingContext2D;
-  const g = ctx.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2);
+  const g = ctx.createLinearGradient(0, 0, 0, s);
   g.addColorStop(0, 'rgba(255,255,255,1)');
-  g.addColorStop(0.55, 'rgba(255,255,255,1)');
+  g.addColorStop(0.7, 'rgba(255,255,255,0.9)');
   g.addColorStop(1, 'rgba(255,255,255,0)');
   ctx.fillStyle = g;
-  ctx.fillRect(0, 0, s, s);
+  ctx.fillRect(0, 0, 4, s);
   tex.hasAlpha = true;
   tex.getAlphaFromRGB = false;
   tex.update(false);
@@ -152,7 +152,7 @@ function softTexture(scene: Scene, name: string): DynamicTexture {
 export class Weather {
   kind: WeatherKind = 'clear';
   rules: WeatherRules = WEATHER_RULES.clear;
-  private cloudMat: StandardMaterial;
+  private cloudMat: PBRMaterial;
   private sparse: DynamicTexture | null = null;
   private dense: DynamicTexture | null = null;
   private rain: ParticleSystem | null = null;
@@ -173,22 +173,20 @@ export class Weather {
     private readonly sound: Sound,
   ) {
     this.maxRain = { ultra: 4500, high: 3500, medium: 2400, low: 1200 }[q.tier];
-    // Wolkenschicht hoch über der Arena
-    const plane = MeshBuilder.CreateGround('clouds', { width: 4200, height: 4200, subdivisions: 1 }, scene);
-    plane.position.y = 320;
-    plane.rotation.x = Math.PI; // Unterseite nach unten
-    const m = new StandardMaterial('cloudMat', scene);
-    m.disableLighting = true;
+    // Wolkenkuppel (Halbkugel um die Kamera), zum Horizont hin ausgeblendet
+    const dome = MeshBuilder.CreateSphere('clouds', { diameter: 1600, segments: 24, slice: 0.5, sideOrientation: Mesh.BACKSIDE }, scene);
+    // Unbeleuchtet, aber ohne Begrenzung auf 1 – passt zur HDR-Helligkeit des Himmels
+    const m = new PBRMaterial('cloudMat', scene);
+    m.unlit = true;
     m.backFaceCulling = false;
-    m.fogEnabled = false;
-    m.useAlphaFromDiffuseTexture = true;
-    m.opacityTexture = radialMask(scene);
-    m.specularColor = Color3.Black();
-    plane.material = m;
-    plane.isPickable = false;
-    plane.applyFog = false;
-    plane.infiniteDistance = true;
-    plane.alphaIndex = 0;
+    m.useAlphaFromAlbedoTexture = true;
+    m.opacityTexture = horizonMask(scene);
+    m.metallic = 0;
+    m.roughness = 1;
+    dome.material = m;
+    dome.isPickable = false;
+    dome.applyFog = false;
+    dome.infiniteDistance = true;
     this.cloudMat = m;
   }
 
@@ -320,8 +318,9 @@ export class Weather {
     if (L.dense && !this.dense) this.dense = cloudTexture(this.scene, true);
     if (!L.dense && !this.sparse) this.sparse = cloudTexture(this.scene, false);
     const tex = (L.dense ? this.dense : this.sparse)!;
-    tex.uScale = tex.vScale = 5;
-    this.cloudMat.diffuseTexture = tex;
+    tex.uScale = 6;
+    tex.vScale = 1.5;
+    this.cloudMat.albedoTexture = tex;
     this.cloudMat.alpha = L.dense ? Math.min(1, 0.4 + L.cover * 0.6) : 0.85;
     // Licht und Dunst
     this.env.setWeather(L.cover, L.fog, L.fogTint, L.gloom);
@@ -356,14 +355,15 @@ export class Weather {
   private refreshCloudColor(): void {
     const day = this.env.daylight;
     const L = this.look;
-    const bright = (0.25 + 0.95 * day) * (1 - 0.6 * Math.max(0, L.cover - 0.3)) + this.flash * 2.5;
+    // Gleiche Helligkeitsskala wie der HDR-Himmel
+    const bright = (0.2 + 0.95 * day) * 3.4 * (1 - 0.7 * Math.max(0, L.cover - 0.3)) * Math.max(0.15, 1 - 1.2 * L.gloom) + this.flash * 6;
     const warm = this.env.sunWarmth;
-    this.cloudMat.diffuseColor = new Color3(bright * (1 + warm * 0.25), bright * (1 + warm * 0.05), bright * (1 - warm * 0.15));
+    this.cloudMat.albedoColor = new Color3(bright * (1 + warm * 0.25), bright * (1 + warm * 0.05), bright * (1 - warm * 0.15));
   }
 
   update(dt: number): void {
     const cam = this.camera.position;
-    const tex = this.cloudMat.diffuseTexture as Texture | null;
+    const tex = this.cloudMat.albedoTexture as Texture | null;
     if (tex) tex.uOffset += dt * 0.0016;
     if (this.rain && this.look.rain > 0) {
       const fw = this.camera.getDirection(Vector3.Forward());

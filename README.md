@@ -53,6 +53,11 @@ Gebaut mit [Babylon.js 9](https://www.babylonjs.com), läuft komplett über GitH
 - Wolkenschicht, weiche Schatten bei Bewölkung, Regenstreifen und Spritzer, nasser dunkler Sand, Pfützen, glänzende Rüstung, Blitze mit Donner, Bodennebel.
 - Wirkung: Hitze bremst die Ausdauer-Erholung (−10 %), nasser Sand macht Ausweichen teurer (+25 %), Nebel verkürzt das Aufschalten.
 
+**Kolosseum (Phase 3)**
+- Zweite Arena: elliptisch, Marmor-Podium mit Bronzegeländer, drei Ränge mit Senatorenplätzen, Bogengänge, Säulengang, Attika mit Masten und Sonnensegel (Velarium), Falltüren zum Hypogäum, Kaiserloge.
+- Bis zu 9.000 Zuschauer (je nach Grafikstufe).
+- Auswahl im Training und beim Eröffnen einer Arena; der Gast wechselt automatisch in die Arena des Gastgebers. Der Wechsel geht ohne Neuladen.
+
 ## Steuerung
 
 | Aktion | Schema A: Gesten | Schema B: Tasten |

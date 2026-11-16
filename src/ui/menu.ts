@@ -8,12 +8,15 @@ import { saveSettings } from '../core/settings';
 import { HeroScreen } from './heroScreen';
 import { Results } from './results';
 import type { WeatherKind } from '../render/weather';
+import type { ArenaKind } from '../arena/capua';
 
-const PROTOCOL = 2;
+const PROTOCOL = 3;
 type Screen = 'menu-main' | 'menu-host' | 'menu-join' | 'menu-train' | 'menu-hero';
 export interface World {
   pick(): { weather: WeatherKind; time: number };
   apply(w: WeatherKind, time: number, announce?: boolean): void;
+  arena(): ArenaKind;
+  setArena(kind: ArenaKind): Promise<void>;
 }
 interface HeroMsg {
   name: string;
@@ -51,6 +54,16 @@ export class Menu {
     $('m-hero').onclick = () => this.show('menu-hero');
     $('m-train').onclick = () => this.showTrain();
     $('m-train-back').onclick = () => this.show('menu-main');
+    for (const id of ['train-arena', 'host-arena']) {
+      $(id).querySelectorAll<HTMLButtonElement>('button').forEach((b) => {
+        b.onclick = () => {
+          this.settings.arena = b.dataset.arena as ArenaKind;
+          saveSettings(this.settings);
+          this.markArena();
+        };
+      });
+    }
+    this.markArena();
     this.applySolo(settings.difficulty);
     $('m-host').onclick = () => this.host();
     $('m-join').onclick = () => this.showJoin();
@@ -79,6 +92,10 @@ export class Menu {
     if (id === 'menu-main') this.heroScreen.refreshCard();
   }
 
+  private markArena(): void {
+    document.querySelectorAll<HTMLButtonElement>('.arena-pick button').forEach((b) => b.classList.toggle('on', b.dataset.arena === this.settings.arena));
+  }
+
   /** Zurück ins Menü (nach einem Trainingskampf) */
   reopen(id: Screen): void {
     this.open = true;
@@ -104,9 +121,10 @@ export class Menu {
       const b = document.createElement('button');
       const xp = winReward(this.hero.level, lvl, 0, false, false).base;
       b.innerHTML = `${AI_NAMES[i]} · Stufe ${lvl}<small>Sieg: ${xp} Erfahrung</small>`;
-      b.onclick = () => {
+      b.onclick = async () => {
         this.settings.difficulty = i;
         saveSettings(this.settings);
+        await this.world.setArena(this.settings.arena);
         this.applySolo(i);
         const w = this.world.pick();
         this.world.apply(w.weather, w.time);
@@ -187,13 +205,25 @@ export class Menu {
           { name: String(guest.name).slice(0, 18), level: guest.level },
         ],
         ...((): { weather: WeatherKind; time: number } => this.world.pick())(),
+        arena: this.settings.arena,
       };
-      $('host-status').textContent = `${setup.info[1].name} (Stufe ${guest.level}) ist da!`;
-      this.countdown('host-status', () => {
-        t.send('start', { v: PROTOCOL, setup });
+      $('host-status').textContent = `${setup.info[1].name} (Stufe ${guest.level}) ist da! Arena wird vorbereitet …`;
+      let ready = false;
+      const go = () => {
+        if (ready) return;
+        ready = true;
+        this.countdown('host-status', () => {
+          t.send('start', { v: PROTOCOL });
+          this.game.startNet('host', t, setup);
+          this.close('host');
+        });
+      };
+      t.on('ready', go);
+      void this.world.setArena(setup.arena!).then(() => {
         this.world.apply(setup.weather as WeatherKind, setup.time ?? 14);
-        this.game.startNet('host', t, setup);
-        this.close('host');
+        t.send('prep', { v: PROTOCOL, setup });
+        // Falls der Gast nicht antwortet: trotzdem beginnen
+        window.setTimeout(go, 20000);
       });
     });
     t.onPeerLeave(() => {
@@ -234,12 +264,20 @@ export class Menu {
       // Antwort, falls unser erstes Hallo zu früh kam
       t.send('hello', { v: PROTOCOL, role: 'guest', hero: this.heroMsg() });
     });
-    t.on('start', (d) => {
-      if (started) return;
-      started = true;
+    let setup: NetSetup | null = null;
+    t.on('prep', async (d) => {
+      if (setup) return;
+      setup = (d as { setup: NetSetup }).setup;
       window.clearTimeout(timeout);
-      const setup = (d as { setup: NetSetup }).setup;
+      $('join-status').textContent = 'Verbunden! Die Arena wird vorbereitet …';
+      if (setup.arena) await this.world.setArena(setup.arena);
       if (setup.weather) this.world.apply(setup.weather as WeatherKind, setup.time ?? 14);
+      $('join-status').textContent = 'Bereit – der Kampf beginnt gleich …';
+      t.send('ready', { v: PROTOCOL });
+    });
+    t.on('start', () => {
+      if (started || !setup) return;
+      started = true;
       this.game.startNet('guest', t, setup);
       this.close('guest');
     });

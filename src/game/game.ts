@@ -1,6 +1,5 @@
 import { FreeCamera, Scene, Vector3 } from '@babylonjs/core';
 import type { Arena } from '../arena/capua';
-import { ARENA } from '../arena/capua';
 import type { Gladiator } from '../gladiators/gladiator';
 import type { Action, TouchInput } from '../input/touch';
 import type { AnimCmd } from '../gladiators/gladiator';
@@ -53,6 +52,7 @@ export interface NetSetup {
   info: [FighterInfo, FighterInfo];
   weather?: string;
   time?: number;
+  arena?: 'capua' | 'colosseum';
 }
 
 export type Role = 'solo' | 'host' | 'guest';
@@ -118,7 +118,7 @@ export class Game implements FighterEvents {
   constructor(
     private readonly scene: Scene,
     private readonly camera: FreeCamera,
-    private readonly arena: Arena,
+    private arena: Arena,
     playerG: Gladiator,
     foeG: Gladiator,
     private readonly input: TouchInput,
@@ -132,7 +132,7 @@ export class Game implements FighterEvents {
     this.foe.target = this.player;
     this.ai = new AiController(this.foe, this.player, difficulty);
     this.fx = new Fx(scene);
-    this.spec = new Spectacle(arena.crowd, sound, {
+    this.spec = new Spectacle(() => this.arena.crowd, sound, {
       now: () => this.now,
       isAuthority: () => this.role !== 'guest',
       player: () => this.player,
@@ -163,6 +163,16 @@ export class Game implements FighterEvents {
 
   readonly spec: Spectacle;
   private lockRange = COMBAT.lockRange;
+
+  /** Andere Arena (nach dem Umbau der Szene) */
+  setArena(a: Arena): void {
+    this.arena = a;
+    this.resetMatch();
+  }
+
+  get arenaKind(): Arena['kind'] {
+    return this.arena.kind;
+  }
 
   /** Wetterregeln für beide Kämpfer */
   setWeatherRules(r: { regenMul: number; rollCostMul: number; lockRange: number }): void {
@@ -1133,10 +1143,12 @@ export class Game implements FighterEvents {
     const pos = f.pos;
     pos.x += f.vel.x * dt;
     pos.z += f.vel.z * dt;
-    const r = Math.hypot(pos.x, pos.z);
-    if (r > ARENA.playRadius) {
-      pos.x *= ARENA.playRadius / r;
-      pos.z *= ARENA.playRadius / r;
+    const pa = this.arena.play;
+    const k = (pos.x / pa.a) ** 2 + (pos.z / pa.b) ** 2;
+    if (k > 1) {
+      const s = 1 / Math.sqrt(k);
+      pos.x *= s;
+      pos.z *= s;
     }
     const push = (ox: number, oz: number, rr: number) => {
       const dx = pos.x - ox;
@@ -1204,11 +1216,12 @@ export class Game implements FighterEvents {
         .add(right.scale(0.45));
       look = target.add(right.scale(0.45));
     }
-    const rr = Math.hypot(camPos.x, camPos.z);
-    const maxR = ARENA.radius - 0.4;
-    if (rr > maxR) {
-      camPos.x *= maxR / rr;
-      camPos.z *= maxR / rr;
+    const wa = this.arena.wall;
+    const kc = (camPos.x / (wa.a - 0.4)) ** 2 + (camPos.z / (wa.b - 0.4)) ** 2;
+    if (kc > 1) {
+      const s = 1 / Math.sqrt(kc);
+      camPos.x *= s;
+      camPos.z *= s;
     }
     if (this.shake > 0) {
       this.shake = Math.max(0, this.shake - dt * 1.6);

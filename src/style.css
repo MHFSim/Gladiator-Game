@@ -1054,3 +1054,28 @@ button.slim {
   pointer-events: none;
   transition: opacity 0.4s;
 }
+
+.busy {
+  z-index: 60;
+}
+.busy[hidden] {
+  display: none;
+}
+.small-title {
+  font-size: clamp(22px, 4.5vw, 40px);
+}
+.arena-pick {
+  display: flex;
+  gap: 8px;
+  width: min(86vw, 560px);
+}
+.arena-pick button {
+  flex: 1;
+  padding: 8px;
+  border-radius: 10px;
+  font-size: 14px;
+}
+.arena-pick button.on {
+  background: rgba(158, 27, 27, 0.6);
+  border-color: var(--gold);
+}

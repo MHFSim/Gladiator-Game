@@ -52,6 +52,22 @@ export class GeoBuilder {
     }
   }
 
+  /** Kreis zur Ellipse strecken (x-Richtung), Normalen passend korrigieren */
+  stretchX(sx: number): this {
+    if (sx === 1) return this;
+    const P = this.positions;
+    const N = this.normals;
+    for (let i = 0; i < P.length; i += 3) {
+      P[i] *= sx;
+      const nx = N[i] / sx;
+      const l = Math.hypot(nx, N[i + 1], N[i + 2]) || 1;
+      N[i] = nx / l;
+      N[i + 1] /= l;
+      N[i + 2] /= l;
+    }
+    return this;
+  }
+
   build(name: string, scene: Scene): Mesh {
     this.fixWinding();
     const mesh = new Mesh(name, scene);

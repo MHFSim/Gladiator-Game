@@ -1,6 +1,7 @@
 import './style.css';
 import { FreeCamera, Logger, Matrix, Scene, Vector3 } from '@babylonjs/core';
-import { buildCapua } from './arena/capua';
+import { buildArena } from './arena';
+import type { ArenaKind } from './arena/capua';
 import { createEngine } from './core/engine';
 import { DynamicResolution, guessTier, PROFILES, TIER_ORDER } from './core/quality';
 import { loadSettings, saveSettings } from './core/settings';
@@ -100,7 +101,8 @@ async function boot(): Promise<void> {
   env.setTime(settings.timeOfDay);
   progress(0.25, 'Baue den Ludus von Capua …');
   await new Promise((r) => setTimeout(r, 0));
-  const arena = buildCapua(scene, env, profile);
+  if (params.get('arena')) settings.arena = params.get('arena') as ArenaKind;
+  let built = buildArena(settings.arena, scene, env, profile);
 
   const assets = await GladiatorAssets.load(scene, progress);
   progress(0.8, 'Lege die Rüstung an …');
@@ -144,6 +146,23 @@ async function boot(): Promise<void> {
       game?.setWeatherRules(weather.rules);
       if (announce) window.setTimeout(() => hud.hint(`${WEATHER_NAMES[w]} – ${RULE_TEXT[w]}`, 3.5), 600);
     },
+    arena(): ArenaKind {
+      return built.arena.kind;
+    },
+    async setArena(kind: ArenaKind): Promise<void> {
+      if (built.arena.kind === kind) return;
+      const busy = document.getElementById('busy') as HTMLElement;
+      (document.getElementById('busy-text') as HTMLElement).textContent = kind === 'colosseum' ? 'Das Kolosseum füllt sich …' : 'Zurück nach Capua …';
+      busy.hidden = false;
+      await new Promise((r) => setTimeout(r, 60));
+      built.dispose();
+      built = buildArena(kind, scene, env, profile);
+      game?.setArena(built.arena);
+      weather.set(weather.kind);
+      game?.setWeatherRules(weather.rules);
+      await withTimeout(scene.whenReadyAsync(), 10000, 'Arena vorbereiten').catch(() => undefined);
+      busy.hidden = true;
+    },
   };
   const hud = new Hud(settings, {
     onSound: (on) => sound.setEnabled(on),
@@ -161,7 +180,7 @@ async function boot(): Promise<void> {
     tierLabel: tier,
   });
   hud.onCheer(() => input.push({ type: 'cheer' }));
-  game = new Game(scene, camera, arena, player, dummy, input, hud, settings.difficulty, sound);
+  game = new Game(scene, camera, built.arena, player, dummy, input, hud, settings.difficulty, sound);
   const g = game;
   g.blockAssist = settings.blockAssist;
   world.apply(world.pick().weather, settings.timeOfDay, false);
@@ -214,6 +233,7 @@ async function boot(): Promise<void> {
     if (view === 'face') g.debugCamera(g.player.pos.add(new Vector3(0.3, 1.55, 1.1)), g.player.pos.add(new Vector3(0, 1.5, 0.05)));
     if (view === 'up') g.debugCamera(new Vector3(0, 1.7, -8), new Vector3(-6, 9, 12));
     if (view === 'side') g.debugCamera(g.player.pos.add(new Vector3(-3.2, 1.5, 1.2)), g.player.pos.add(new Vector3(0, 1.0, 0)));
+    if (view === 'high') g.debugCamera(new Vector3(-21, 15, -8), new Vector3(12, 9, 8));
     if (view === 'duel') g.debugCamera(new Vector3(4.5, 2.2, -3), new Vector3(0, 1.2, -1.8));
     scene.render();
     const fps = dyn.update(frameDt);
@@ -248,6 +268,7 @@ async function boot(): Promise<void> {
   (document.getElementById('loading') as HTMLElement).style.display = 'none';
   (window as unknown as { __ready: boolean; __game: Game }).__ready = true;
   (window as unknown as { __game: Game; __input: TouchInput }).__game = g;
+  (window as unknown as { __world: typeof world }).__world = world;
   (window as unknown as { __input: TouchInput }).__input = input;
 }
 

@@ -10,7 +10,7 @@ export interface Transport {
   readonly kind: string;
 }
 
-export const CHANNELS = ['hello', 'start', 'in', 'act', 'snap', 'anim', 'ev'] as const;
+export const CHANNELS = ['hello', 'prep', 'ready', 'start', 'in', 'act', 'snap', 'anim', 'ev'] as const;
 const APP_ID = 'mhfsim.github.io/Gladiator-Game/v1';
 
 /** Echte Verbindung übers Internet: WebRTC direkt zwischen den Handys, Vermittlung über öffentliche Nostr-Relays */

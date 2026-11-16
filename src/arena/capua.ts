@@ -44,9 +44,21 @@ export interface Obstacle {
   r: number;
 }
 
+export type ArenaKind = 'capua' | 'colosseum';
+
+export const ARENA_NAMES: Record<ArenaKind, string> = {
+  capua: 'Ludus von Capua',
+  colosseum: 'Kolosseum',
+};
+
 export interface Arena {
+  kind: ArenaKind;
   obstacles: Obstacle[];
   crowd: Crowd;
+  /** Spielfläche als Ellipse (Halbachsen x, z) */
+  play: { a: number; b: number };
+  /** Mauer innen, für die Kamera */
+  wall: { a: number; b: number };
   update(dt: number, daylight: number): void;
 }
 
@@ -175,7 +187,7 @@ export function buildCapua(scene: Scene, env: Environment, q: QualityProfile): A
     r += depth;
     y += rise;
   }
-  const crowd = buildCrowd(scene, env, q, { r0: R + 0.7, y0: H, steps, depth, rise });
+  const crowd = buildCrowd(scene, env, q, [{ r0: R + 0.7, y0: H, steps, depth, rise }]);
   const stepsMesh = gSteps.build('steps', scene);
   stepsMesh.material = matStone;
   stepsMesh.receiveShadows = true;
@@ -390,8 +402,11 @@ export function buildCapua(scene: Scene, env: Environment, q: QualityProfile): A
 
   let t = 0;
   return {
+    kind: 'capua',
     obstacles,
     crowd,
+    play: { a: ARENA.playRadius, b: ARENA.playRadius },
+    wall: { a: ARENA.radius, b: ARENA.radius },
     update(dt: number, daylight: number) {
       t += dt;
       crowd.update(dt);
