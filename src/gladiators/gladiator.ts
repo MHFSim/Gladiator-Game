@@ -50,6 +50,7 @@ export class GladiatorAssets {
 /* ---------- Animations-Steuerung mit Ebenen ---------- */
 
 interface ActionState {
+  id: number;
   group: AnimationGroup;
   weight: number;
   elapsed: number;
@@ -62,6 +63,18 @@ interface ActionState {
   onEnd?: () => void;
 }
 
+export interface PlayOptions {
+  speed?: number;
+  /** Ausschnitt der Animation in Sekunden [von, bis] */
+  range?: [number, number];
+  fadeIn?: number;
+  fadeOut?: number;
+  loop?: boolean;
+  /** Ereignisse bei einem Anteil (0..1) der Dauer */
+  events?: { at: number; fn: () => void }[];
+  onEnd?: () => void;
+}
+
 const LOCO: [string, number][] = [
   ['sword_idle', 0],
   ['walk', 1.4],
@@ -69,10 +82,13 @@ const LOCO: [string, number][] = [
   ['sprint', 6.0],
 ];
 
+let actionIds = 1;
+
 export class Animator {
   private loco: AnimationGroup[] = [];
   private overlay: AnimationGroup;
   private actions: ActionState[] = [];
+  private locoWeights = [1, 0, 0, 0];
 
   constructor(private readonly groups: Map<string, AnimationGroup>, leftArm: string[]) {
     const exclude = new AnimationGroupMask(leftArm, AnimationGroupMaskMode.Exclude);
@@ -95,15 +111,18 @@ export class Animator {
     return g;
   }
 
-  durationOf(name: string, speed = 1): number {
-    const g = this.get(name);
-    const fps = g.targetedAnimations[0]?.animation.framePerSecond ?? 30;
-    return (g.to - g.from) / fps / speed;
+  fps(name: string): number {
+    return this.get(name).targetedAnimations[0]?.animation.framePerSecond ?? 30;
   }
 
-  private locoWeights = [1, 0, 0, 0];
+  durationOf(name: string, speed = 1, range?: [number, number]): number {
+    const g = this.get(name);
+    const len = range ? range[1] - range[0] : (g.to - g.from) / this.fps(name);
+    return len / speed;
+  }
 
-  setSpeed(s: number): void {
+  /** Fortbewegung: Geschwindigkeit in m/s, rückwärts spielt die Laufanimationen umgekehrt */
+  setSpeed(s: number, backwards = false): void {
     const w = [0, 0, 0, 0];
     if (s <= 0.05) w[0] = 1;
     else {
@@ -124,27 +143,30 @@ export class Animator {
     this.locoWeights = w;
     for (let i = 1; i < LOCO.length; i++) {
       const nominal = LOCO[i][1];
-      this.loco[i].speedRatio = Math.min(1.5, Math.max(0.7, s / nominal));
+      const r = Math.min(1.5, Math.max(0.7, s / nominal));
+      this.loco[i].speedRatio = backwards ? -r : r;
     }
   }
 
-  /** Spielt eine Aktion über allem anderen. */
-  play(
-    name: string,
-    opts: { speed?: number; fadeIn?: number; fadeOut?: number; loop?: boolean; events?: { at: number; fn: () => void }[]; onEnd?: () => void } = {},
-  ): void {
+  /** Spielt eine Aktion über allem anderen. Gibt eine Kennung zurück, mit der sie abgebrochen werden kann. */
+  play(name: string, opts: PlayOptions = {}): number {
     const g = this.get(name);
     for (const a of this.actions) a.fading = true;
     const speed = opts.speed ?? 1;
+    const fps = this.fps(name);
+    const from = opts.range ? g.from + opts.range[0] * fps : g.from;
+    const to = opts.range ? g.from + opts.range[1] * fps : g.to;
     g.stop();
-    g.start(true, speed, g.from, g.to);
+    g.start(true, speed, from, to);
     g.weight = 0;
     this.actions = this.actions.filter((a) => a.group !== g);
+    const id = actionIds++;
     this.actions.push({
+      id,
       group: g,
       weight: 0,
       elapsed: 0,
-      duration: this.durationOf(name, speed),
+      duration: this.durationOf(name, speed, opts.range),
       fadeIn: opts.fadeIn ?? 0.1,
       fadeOut: opts.fadeOut ?? 0.15,
       loop: opts.loop ?? false,
@@ -152,11 +174,28 @@ export class Animator {
       events: (opts.events ?? []).map((e) => ({ ...e, done: false })),
       onEnd: opts.onEnd,
     });
+    return id;
   }
 
-  /** Beendet eine Schleifen-Aktion (z. B. Block halten) */
+  /** Bricht eine laufende Aktion ab (Finte, Unterbrechung). Ereignisse feuern nicht mehr. */
+  cancel(id: number, fadeOut = 0.12): void {
+    for (const a of this.actions) {
+      if (a.id === id) {
+        a.fading = true;
+        a.fadeOut = fadeOut;
+        a.events = [];
+        a.onEnd = undefined;
+      }
+    }
+  }
+
+  /** Beendet alle Aktionen einer Animation (z. B. eine Schleife) */
   stop(name: string): void {
     for (const a of this.actions) if (a.group.name.startsWith(name + '#') || a.group.name === name) a.fading = true;
+  }
+
+  isPlaying(id: number): boolean {
+    return this.actions.some((a) => a.id === id && !a.fading);
   }
 
   get busy(): boolean {
@@ -206,6 +245,13 @@ export class Gladiator {
   hp = 100;
   stamina = 100;
   meshes: AbstractMesh[] = [];
+  nodes = new Map<string, TransformNode>();
+  align!: TransformNode;
+  baseAlignYaw = 0;
+  twistBones: { node: TransformNode; axis: Vector3; w: number }[] = [];
+  twistSign = 1;
+  /** Drehung der Beine relativ zur Blickrichtung (Radiant). Der Oberkörper dreht entgegen. */
+  legYaw = 0;
   readonly chestHeight: number;
 
   private constructor(root: TransformNode, animator: Animator, id: string, chestHeight: number) {
@@ -363,6 +409,41 @@ export class Gladiator {
 
     const chest = P('spine_03').y;
     const g = new Gladiator(wrapper, animator, id, chest);
+    g.nodes = nodes;
+    g.align = align;
+    g.baseAlignYaw = align.rotation.y;
+
+    // Oberkörper-Drehung vorbereiten: lokale Drehachse je Wirbel, die im Ruhezustand der Welt-Hochachse entspricht
+    const yawOf = (v: Vector3) => Math.atan2(v.x, v.z);
+    const shoulderYaw = () => {
+      refresh();
+      const v = P('clavicle_r').subtract(P('clavicle_l'));
+      return yawOf(v);
+    };
+    const spec: [string, number][] = [
+      ['spine_01', 0.3],
+      ['spine_02', 0.3],
+      ['spine_03', 0.28],
+      ['neck_01', 0.12],
+    ];
+    for (const [name, w] of spec) {
+      const n = need(name);
+      const inv = n.getWorldMatrix().clone().invert();
+      const axis = Vector3.TransformNormal(new Vector3(0, 1, 0), inv).normalize();
+      g.twistBones.push({ node: n, axis, w });
+    }
+    const before = shoulderYaw();
+    const sp = g.twistBones[0];
+    const q0 = sp.node.rotationQuaternion!.clone();
+    sp.node.rotationQuaternion = q0.multiply(Quaternion.RotationAxis(sp.axis, 0.3));
+    const after = shoulderYaw();
+    sp.node.rotationQuaternion = q0;
+    refresh();
+    let d = after - before;
+    if (d > Math.PI) d -= Math.PI * 2;
+    if (d < -Math.PI) d += Math.PI * 2;
+    g.twistSign = d >= 0 ? 1 : -1;
+    scene.onAfterAnimationsObservable.add(() => g.applyTwist());
     (window as unknown as Record<string, unknown>)['__pose_' + id] = () => {
       const w = (n: string) => need(n).getAbsolutePosition();
       const toe = w('ball_l').subtract(w('foot_l'));
@@ -373,6 +454,18 @@ export class Gladiator {
     };
     g.meshes = meshes;
     return g;
+  }
+
+  /** Nach den Animationen: Beine in Laufrichtung, Oberkörper bleibt zum Gegner gerichtet */
+  applyTwist(): void {
+    this.align.rotation.y = this.baseAlignYaw + this.legYaw;
+    if (Math.abs(this.legYaw) < 1e-3) return;
+    const total = -this.legYaw * this.twistSign;
+    for (const b of this.twistBones) {
+      const q = b.node.rotationQuaternion;
+      if (!q) continue;
+      b.node.rotationQuaternion = q.multiply(Quaternion.RotationAxis(b.axis, total * b.w));
+    }
   }
 
   setHeading(h: number): void {

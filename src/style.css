@@ -220,34 +220,194 @@ button.pressed {
 
 #buttons {
   position: absolute;
-  right: calc(18px + var(--safe-r));
-  bottom: calc(18px + var(--safe-b));
-  width: 230px;
-  height: 200px;
+  right: calc(10px + var(--safe-r));
+  bottom: calc(10px + var(--safe-b));
+  width: 300px;
+  height: 230px;
   display: none;
 }
 #hud.scheme-buttons #buttons {
   display: block;
 }
+#buttons .round {
+  position: absolute;
+}
+.round.mid {
+  width: 56px;
+  height: 56px;
+  font-size: 12px;
+}
+.round.dir {
+  width: 50px;
+  height: 50px;
+  font-size: 18px;
+}
+.round.dir.active {
+  background: rgba(231, 194, 122, 0.55);
+  color: #1a0f0a;
+}
 #btn-attack {
-  position: absolute;
-  right: 0;
-  bottom: 0;
+  right: 58px;
+  bottom: 58px;
 }
-#btn-block {
-  position: absolute;
-  right: 104px;
-  bottom: 0;
+#btn-g-top {
+  right: 79px;
+  bottom: 158px;
 }
-#btn-roll {
-  position: absolute;
-  right: 0;
-  bottom: 104px;
+#btn-g-left {
+  right: 158px;
+  bottom: 79px;
+}
+#btn-g-right {
+  right: 0px;
+  bottom: 79px;
+}
+#btn-parry {
+  right: 230px;
+  bottom: 150px;
 }
 #btn-bash {
+  right: 236px;
+  bottom: 74px;
+}
+#btn-roll {
+  right: 166px;
+  bottom: 4px;
+}
+
+/* Deckungsanzeige um den Gegner */
+#guard-widget {
   position: absolute;
-  right: 80px;
-  bottom: 84px;
+  left: 0;
+  top: 0;
+  width: 124px;
+  height: 124px;
+  margin: -62px 0 0 -62px;
+  pointer-events: none;
+  will-change: transform;
+}
+#guard-widget[hidden] {
+  display: none;
+}
+.gw {
+  position: absolute;
+  width: 0;
+  height: 0;
+  border-style: solid;
+  opacity: 0.35;
+  transition: opacity 0.08s;
+  filter: drop-shadow(0 0 2px #000);
+}
+.gw-top {
+  left: 50%;
+  top: 0;
+  margin-left: -22px;
+  border-width: 0 22px 26px 22px;
+  border-color: transparent transparent #f3e9d8 transparent;
+}
+.gw-left {
+  left: 0;
+  top: 50%;
+  margin-top: -22px;
+  border-width: 22px 26px 22px 0;
+  border-color: transparent #f3e9d8 transparent transparent;
+}
+.gw-right {
+  right: 0;
+  top: 50%;
+  margin-top: -22px;
+  border-width: 22px 0 22px 26px;
+  border-color: transparent transparent transparent #f3e9d8;
+}
+.gw.mine {
+  opacity: 1;
+}
+.gw-top.mine { border-bottom-color: #e7c27a; }
+.gw-left.mine { border-right-color: #e7c27a; }
+.gw-right.mine { border-left-color: #e7c27a; }
+.gw.foe {
+  opacity: 0.85;
+}
+.gw-top.foe { border-bottom-color: #b33a2e; }
+.gw-left.foe { border-right-color: #b33a2e; }
+.gw-right.foe { border-left-color: #b33a2e; }
+.gw-top.foe.mine { border-bottom-color: #e7c27a; }
+.gw-left.foe.mine { border-right-color: #e7c27a; }
+.gw-right.foe.mine { border-left-color: #e7c27a; }
+.gw.incoming {
+  opacity: 1;
+  animation: pulse 0.18s infinite alternate;
+}
+.gw-top.incoming { border-bottom-color: #ff2a1a !important; }
+.gw-left.incoming { border-right-color: #ff2a1a !important; }
+.gw-right.incoming { border-left-color: #ff2a1a !important; }
+.gw-top.incoming.heavy { border-bottom-color: #ff8a00 !important; }
+.gw-left.incoming.heavy { border-right-color: #ff8a00 !important; }
+.gw-right.incoming.heavy { border-left-color: #ff8a00 !important; }
+@keyframes pulse {
+  from { transform: scale(1); }
+  to { transform: scale(1.25); }
+}
+.foe-bars {
+  position: absolute;
+  left: 22px;
+  top: -30px;
+  width: 80px;
+}
+.foe-hp, .foe-st {
+  height: 5px;
+  margin-bottom: 2px;
+  background: rgba(0, 0, 0, 0.55);
+  border-radius: 3px;
+  overflow: hidden;
+}
+#foe-hp-fill {
+  height: 100%;
+  width: 100%;
+  background: #c8302a;
+}
+#foe-st-fill {
+  height: 100%;
+  width: 100%;
+  background: #e7c27a;
+}
+#float-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+.float {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  font-size: 20px;
+  font-weight: bold;
+  letter-spacing: 0.05em;
+  color: #f3e9d8;
+  text-shadow: 0 2px 0 #000, 0 0 10px rgba(0, 0, 0, 0.8);
+  animation: floatUp 1s ease-out forwards;
+  white-space: nowrap;
+}
+.float.good { color: #e7c27a; }
+.float.bad { color: #ff4a3a; }
+.float.big { font-size: 28px; }
+@keyframes floatUp {
+  0% { opacity: 0; transform: translate(-50%, -30%) scale(0.8); }
+  15% { opacity: 1; transform: translate(-50%, -60%) scale(1.1); }
+  100% { opacity: 0; transform: translate(-50%, -160%) scale(1); }
+}
+#score {
+  position: absolute;
+  left: 50%;
+  top: calc(52px + var(--safe-t));
+  transform: translateX(-50%);
+  font-size: 16px;
+  letter-spacing: 0.15em;
+  color: var(--gold);
+  text-shadow: 0 1px 0 #000;
+}
+#btn-lock.on {
+  background: rgba(158, 27, 27, 0.75);
 }
 
 #stick-base {

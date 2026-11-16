@@ -5,32 +5,39 @@ Gebaut mit [Babylon.js 9](https://www.babylonjs.com), läuft komplett über GitH
 
 **Spielen:** https://mhfsim.github.io/Gladiator-Game/
 
-## Stand: Phase 0 + erster Kampf
+## Stand: Phase 1 – Richtungskampf
 
-- Ludus von Capua, komplett im Code erzeugt: Arena mit bemalter Podiumsmauer, zwei Tore mit Fallgitter,
-  acht Sitzstufen, Säulengang mit Ziegeldach, Fahnen, Trainingspfähle, Waffengestell, vier Feuerbecken,
-  Zypressen und der rauchende Vesuv am Horizont.
-- Physikalischer Himmel, Sonne mit weichen Schatten, Dunst, Staub in der Luft, Tageszeit 6–20:30 Uhr
-  (im Menü einstellbar). Abends und nachts beleuchten die Feuerbecken die Arena.
-- Murmillo mit Helm (Kamm, Federbusch, Gittervisier), bemaltem Scutum, Gladius, Manica, Beinschiene und Gürtel.
-- 29 Motion-Capture-Animationen, Bewegungen werden weich überblendet, der Schildarm hält den Schild auch beim Laufen.
-- Trainingspartner (blau), der näher kommt, angreift, blockt, getroffen wird, fällt und wieder aufsteht.
-- Blut, Funken, Blutflecken im Sand, Kamerawackeln und kurzer Bildstopp bei Treffern.
-- Zwei Steuerungen (Einstellungen ⚙): **A** Stick + Gesten, **B** Stick + Tasten.
-- Qualitätsstufen mit automatischer Auflösungsanpassung, Akku-Modus (30 FPS), WebGPU optional.
-- Installierbar als Web-App („Zum Home-Bildschirm“) für Vollbild.
+**Arena und Grafik (Phase 0)**
+- Ludus von Capua, komplett im Code erzeugt: bemalte Podiumsmauer, zwei Tore mit Fallgitter, Sitzstufen,
+  Säulengang mit Ziegeldach, Fahnen, Trainingspfähle, Waffengestell, Feuerbecken, Zypressen, rauchender Vesuv.
+- Physikalischer Himmel, Sonne mit weichen Schatten, Dunst, Staub, Tageszeit 6–20:30 Uhr im Menü.
+- Murmillo mit Helm, Federbusch, Gittervisier, bemaltem Scutum, Gladius, Manica, Beinschiene, Gürtel.
+
+**Kampf (Phase 1)**
+- Deckung oben, links, rechts. Geblockt wird automatisch, wenn die eigene Deckung (gold) zur Angriffsseite (rot) passt.
+- Leichte und schwere Angriffe aus allen drei Richtungen, Kombos, Finten (schweren Angriff abbrechen).
+- Parade im letzten Moment: Gegner taumelt, du darfst kontern.
+- Deckung brechen mit dem Schild, Ausweichrolle mit Unverwundbarkeit, Ausdauer und Erschöpfung.
+- Trefferzonen Kopf, Rumpf, Waffenarm, Bein mit Rüstung (Helm, Manica, Beinschiene) und Folgen (schwächer, langsamer).
+- Aufschalten mit Kamera, die beide Kämpfer zeigt. Beim Seitwärts- und Rückwärtsgehen drehen sich die Beine,
+  der Oberkörper bleibt zum Gegner gerichtet.
+- KI-Gegner in fünf Stufen (Rekrut bis Primus Palus) mit menschlicher Reaktionszeit, Paraden, Finten, Schildstößen.
+- Runden mit Spielstand, Blut, Funken, Blutflecken im Sand, Bildstopp und Kamerawackeln.
+- Alle Kampfwerte in `src/data/combat.json`.
 
 ## Steuerung
 
 | Aktion | Schema A: Gesten | Schema B: Tasten |
 | --- | --- | --- |
 | Laufen | Linker Daumen ziehen | Linker Daumen ziehen |
-| Kamera | Rechter Daumen ziehen | Rechter Daumen ziehen |
-| Leichter Schlag (Kombo) | Rechts tippen | „Schlag“ tippen |
-| Schwerer Schlag | Rechts halten | „Schlag“ halten |
-| Block | Zwei Finger rechts halten | „Schild“ halten |
-| Rolle | Rechts zur Seite / nach unten wischen | „Rolle“ |
-| Schildstoß | Rechts nach oben wischen | „Faust“ |
+| Deckung wählen | Rechter Daumen nach oben/links/rechts schieben | ▲ ◀ ▶ |
+| Leichter Angriff | Rechts tippen | „Schlag“ tippen |
+| Schwerer Angriff | Rechts halten | „Schlag“ halten |
+| Parade | Schnell in die Angriffsrichtung wischen | „Parade“ im richtigen Moment |
+| Finte | Während des schweren Angriffs wischen | Während des schweren Angriffs „Parade“ |
+| Deckung brechen | Mit zwei Fingern tippen | „Faust“ |
+| Ausweichen | Nach unten wischen (Richtung mit dem Stick) | „Rolle“ |
+| Aufschalten an/aus | ◎ oben rechts | ◎ oben rechts |
 
 ## Entwickeln
 

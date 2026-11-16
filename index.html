@@ -37,6 +37,7 @@
       </div>
       <div id="top-right">
         <span id="fps"></span>
+        <button id="btn-lock" class="round small" aria-label="Aufschalten">◎</button>
         <button id="btn-settings" class="round small" aria-label="Einstellungen">⚙</button>
       </div>
       <div id="bars">
@@ -47,11 +48,23 @@
 
       <!-- Schema B: Tasten -->
       <div id="buttons">
-        <button id="btn-roll" class="round" data-action="roll">Rolle</button>
-        <button id="btn-bash" class="round" data-action="bash">Faust</button>
-        <button id="btn-block" class="round" data-action="block">Schild</button>
-        <button id="btn-attack" class="round big" data-action="attack">Schlag</button>
+        <button id="btn-g-top" class="round dir" aria-label="Deckung oben">▲</button>
+        <button id="btn-g-left" class="round dir" aria-label="Deckung links">◀</button>
+        <button id="btn-g-right" class="round dir" aria-label="Deckung rechts">▶</button>
+        <button id="btn-attack" class="round big">Schlag</button>
+        <button id="btn-parry" class="round mid">Parade</button>
+        <button id="btn-bash" class="round mid">Faust</button>
+        <button id="btn-roll" class="round mid">Rolle</button>
       </div>
+
+      <div id="guard-widget" hidden>
+        <div class="foe-bars"><div class="foe-hp"><div id="foe-hp-fill"></div></div><div class="foe-st"><div id="foe-st-fill"></div></div></div>
+        <div class="gw gw-top"></div>
+        <div class="gw gw-left"></div>
+        <div class="gw gw-right"></div>
+      </div>
+      <div id="float-layer"></div>
+      <div id="score"></div>
 
       <div id="stick-base"><div id="stick-knob"></div></div>
     </div>
@@ -62,6 +75,15 @@
         <select id="set-scheme">
           <option value="gestures">A: Stick + Gesten</option>
           <option value="buttons">B: Stick + Tasten</option>
+        </select>
+      </label>
+      <label>Gegner
+        <select id="set-difficulty">
+          <option value="0">1 · Rekrut</option>
+          <option value="1">2 · Tiro</option>
+          <option value="2">3 · Veteran</option>
+          <option value="3">4 · Champion</option>
+          <option value="4">5 · Primus Palus</option>
         </select>
       </label>
       <label>Grafik

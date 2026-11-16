@@ -1,5 +1,5 @@
 import './style.css';
-import { FreeCamera, Scene, Vector3 } from '@babylonjs/core';
+import { FreeCamera, Matrix, Scene, Vector3 } from '@babylonjs/core';
 import { buildCapua } from './arena/capua';
 import { createEngine } from './core/engine';
 import { DynamicResolution, guessTier, PROFILES, TIER_ORDER } from './core/quality';
@@ -20,6 +20,7 @@ function progress(p: number, label: string): void {
 async function boot(): Promise<void> {
   const settings = loadSettings();
   if (params.get('quality')) settings.quality = params.get('quality') as typeof settings.quality;
+  if (params.get('scheme')) settings.scheme = params.get('scheme') as typeof settings.scheme;
   if (params.get('time')) settings.timeOfDay = parseFloat(params.get('time')!);
   const canvas = document.getElementById('game') as HTMLCanvasElement;
   progress(0.05, 'Starte Grafik …');
@@ -63,7 +64,17 @@ async function boot(): Promise<void> {
   bindButtons(document.getElementById('buttons') as HTMLElement, input);
 
   let paused = false;
+  let game: Game | null = null;
+  const project = (w: Vector3) => {
+    const width = canvas.clientWidth;
+    const height = canvas.clientHeight;
+    const p = Vector3.Project(w, Matrix.Identity(), scene.getTransformMatrix(), camera.viewport.toGlobal(width, height));
+    if (p.z < 0 || p.z > 1) return null;
+    return { x: p.x, y: p.y };
+  };
   const hud = new Hud(settings, {
+    onDifficulty: (i) => game?.setDifficulty(i),
+    project,
     onScheme: (s) => (input.scheme = s),
     onTime: (h) => env.setTime(h),
     onPause: (p) => (paused = p),
@@ -71,7 +82,8 @@ async function boot(): Promise<void> {
     tierLabel: tier,
   });
   hud.onCheer(() => input.push({ type: 'cheer' }));
-  const game = new Game(scene, camera, arena, player, dummy, input, hud);
+  game = new Game(scene, camera, arena, player, dummy, input, hud, settings.difficulty);
+  const g = game;
 
   progress(0.95, 'Die Tore öffnen sich …');
   await scene.whenReadyAsync();
@@ -94,13 +106,14 @@ async function boot(): Promise<void> {
     last = now;
     const frameDt = settings.battery ? acc : dt;
     acc = 0;
-    if (!paused) game.update(frameDt, env.daylight, params.has('freeze'));
-    if (view === 'hero') game.debugCamera(new Vector3(1.6, 1.7, -3.9), new Vector3(0, 1.25, -6));
-    if (view === 'arena') game.debugCamera(new Vector3(9, 6.5, -12), new Vector3(-2, 1.5, 2));
-    if (view === 'front') game.debugCamera(new Vector3(0.4, 1.7, -3.6), new Vector3(0, 1.35, -6));
-    if (view === 'face') game.debugCamera(new Vector3(0.15, 1.75, -4.9), new Vector3(0, 1.62, -6));
-    if (view === 'up') game.debugCamera(new Vector3(0, 1.7, -8), new Vector3(-6, 9, 12));
-    if (view === 'duel') game.debugCamera(new Vector3(4.5, 2.2, -3), new Vector3(0, 1.2, -1.8));
+    if (!paused) g.update(frameDt, env.daylight, params.has('freeze'));
+    if (view === 'hero') g.debugCamera(new Vector3(1.6, 1.7, -3.9), new Vector3(0, 1.25, -6));
+    if (view === 'arena') g.debugCamera(new Vector3(9, 6.5, -12), new Vector3(-2, 1.5, 2));
+    if (view === 'front') g.debugCamera(new Vector3(0.4, 1.7, -3.6), new Vector3(0, 1.35, -6));
+    if (view === 'face') g.debugCamera(new Vector3(0.15, 1.75, -4.9), new Vector3(0, 1.62, -6));
+    if (view === 'up') g.debugCamera(new Vector3(0, 1.7, -8), new Vector3(-6, 9, 12));
+    if (view === 'side') g.debugCamera(g.player.pos.add(new Vector3(-3.2, 1.5, 1.2)), g.player.pos.add(new Vector3(0, 1.0, 0)));
+    if (view === 'duel') g.debugCamera(new Vector3(4.5, 2.2, -3), new Vector3(0, 1.2, -1.8));
     scene.render();
     const fps = dyn.update(frameDt);
     if (fps !== null) {
@@ -133,7 +146,7 @@ async function boot(): Promise<void> {
 
   (document.getElementById('loading') as HTMLElement).style.display = 'none';
   (window as unknown as { __ready: boolean; __game: Game }).__ready = true;
-  (window as unknown as { __game: Game; __input: TouchInput }).__game = game;
+  (window as unknown as { __game: Game; __input: TouchInput }).__game = g;
   (window as unknown as { __input: TouchInput }).__input = input;
 }
 

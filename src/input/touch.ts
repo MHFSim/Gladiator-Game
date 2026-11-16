@@ -1,31 +1,52 @@
 import type { Scheme } from '../core/settings';
+import type { Dir } from '../game/fighter';
 
 export type Action =
   | { type: 'light' }
   | { type: 'heavy' }
-  | { type: 'blockStart' }
-  | { type: 'blockEnd' }
-  | { type: 'roll'; dir: 'left' | 'right' | 'back' | 'forward' }
+  | { type: 'guard'; dir: Dir }
+  | { type: 'parry'; dir?: Dir }
   | { type: 'bash' }
+  | { type: 'roll'; dir: 'left' | 'right' | 'back' | 'forward' | 'stick' }
+  | { type: 'lock' }
   | { type: 'cheer' };
+
+interface RightTouch {
+  x0: number;
+  y0: number;
+  x: number;
+  y: number;
+  t0: number;
+  moved: boolean; // als Richtungs- oder Kamerazug erkannt
+  heavyFired: boolean;
+  multi: boolean; // Teil einer Zwei-Finger-Geste
+  lastGuard: Dir | null;
+}
+
+const HOLD_MS = 300;
+const FLICK_MS = 200;
 
 /**
  * Touch-Steuerung für das Querformat.
- * Linke Hälfte: schwebender Stick. Rechte Hälfte: Kamera + Gesten (Schema A) oder Kamera (Schema B, Tasten im HUD).
+ * Linke Hälfte: schwebender Stick.
+ * Rechte Hälfte, Schema A (aufgeschaltet): Daumen schieben = Deckung (oben/links/rechts), tippen = leichter Angriff,
+ * halten = schwerer Angriff, schnell wischen = Parade in diese Richtung, nach unten wischen = Ausweichen,
+ * zwei Finger tippen = Deckung brechen. Nicht aufgeschaltet: ziehen = Kamera.
+ * Schema B: Tasten im HUD, rechte freie Fläche = Kamera.
  */
 export class TouchInput {
-  move = { x: 0, y: 0 }; // x = rechts, y = vorwärts, Länge 0..1
+  move = { x: 0, y: 0 };
   camDelta = { x: 0, y: 0 };
-  private queue: Action[] = [];
   scheme: Scheme;
+  /** wird vom Spiel gesetzt */
+  locked = false;
+  private queue: Action[] = [];
 
   private stickId: number | null = null;
   private stickOrigin = { x: 0, y: 0 };
   private readonly stickRadius = 58;
-
-  private right = new Map<number, { x0: number; y0: number; x: number; y: number; t0: number; drag: boolean; heavyFired: boolean }>();
-  private blocking = false;
-  private heavyTimer: number | null = null;
+  private right = new Map<number, RightTouch>();
+  private holdTimer: number | null = null;
 
   constructor(
     el: HTMLElement,
@@ -38,7 +59,11 @@ export class TouchInput {
     window.addEventListener('pointermove', (e) => this.moveEv(e), { passive: false });
     window.addEventListener('pointerup', (e) => this.up(e));
     window.addEventListener('pointercancel', (e) => this.up(e));
-    // Tastatur nur fürs Testen am Rechner
+    this.bindKeyboard();
+  }
+
+  /** Tastatur nur zum Testen am Rechner */
+  private bindKeyboard(): void {
     const keys = new Set<string>();
     const updateKeys = () => {
       const x = (keys.has('d') ? 1 : 0) - (keys.has('a') ? 1 : 0);
@@ -52,17 +77,25 @@ export class TouchInput {
       const k = e.key.toLowerCase();
       if (e.repeat) return;
       keys.add(k);
-      if (k === 'j') this.push({ type: 'light' });
-      if (k === 'k') this.push({ type: 'heavy' });
-      if (k === 'l') this.push({ type: 'blockStart' });
-      if (k === ' ') this.push({ type: 'roll', dir: 'back' });
-      if (k === 'e') this.push({ type: 'bash' });
+      const map: Record<string, Action> = {
+        j: { type: 'light' },
+        k: { type: 'heavy' },
+        i: { type: 'guard', dir: 'top' },
+        u: { type: 'guard', dir: 'left' },
+        o: { type: 'guard', dir: 'right' },
+        l: { type: 'parry' },
+        ' ': { type: 'roll', dir: 'stick' },
+        e: { type: 'bash' },
+        tab: { type: 'lock' },
+      };
+      if (map[k]) {
+        e.preventDefault();
+        this.push(map[k]);
+      }
       updateKeys();
     });
     window.addEventListener('keyup', (e) => {
-      const k = e.key.toLowerCase();
-      keys.delete(k);
-      if (k === 'l') this.push({ type: 'blockEnd' });
+      keys.delete(e.key.toLowerCase());
       updateKeys();
     });
   }
@@ -88,9 +121,21 @@ export class TouchInput {
     return x < window.innerWidth * 0.45;
   }
 
+  /** Richtung eines Zugs: oben, links, rechts oder unten */
+  private static dirOf(dx: number, dy: number): Dir | 'down' {
+    if (dy < 0 && -dy > Math.abs(dx) * 0.75) return 'top';
+    if (dy > 0 && dy > Math.abs(dx) * 1.2) return 'down';
+    return dx < 0 ? 'left' : 'right';
+  }
+
+  private get gestureMode(): boolean {
+    return this.scheme === 'gestures';
+  }
+
   private down(e: PointerEvent): void {
     e.preventDefault();
-    if (this.isLeft(e.clientX) && this.stickId === null) {
+    if (this.isLeft(e.clientX)) {
+      if (this.stickId !== null) return;
       this.stickId = e.pointerId;
       this.stickOrigin = { x: e.clientX, y: e.clientY };
       this.stickBase.style.left = `${e.clientX}px`;
@@ -99,37 +144,37 @@ export class TouchInput {
       this.stickBase.classList.add('on');
       return;
     }
-    if (this.isLeft(e.clientX)) return;
     const now = performance.now();
-    this.right.set(e.pointerId, { x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY, t0: now, drag: false, heavyFired: false });
-    if (this.scheme !== 'gestures') {
-      // Schema B: rechte Fläche nur Kamera
-      this.right.get(e.pointerId)!.drag = true;
+    const t: RightTouch = { x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY, t0: now, moved: false, heavyFired: false, multi: false, lastGuard: null };
+    this.right.set(e.pointerId, t);
+    if (!this.gestureMode) {
+      t.moved = true; // Schema B: rechte Fläche nur Kamera
       return;
     }
-    // Zwei Finger rechts = Block halten
-    if (this.right.size === 2 && !this.blocking) {
-      this.blocking = true;
-      this.clearHeavy();
-      this.push({ type: 'blockStart' });
-      for (const p of this.right.values()) p.heavyFired = true;
-      return;
+    // Zwei Finger kurz hintereinander = Deckung brechen
+    if (this.right.size === 2) {
+      const others = [...this.right.values()];
+      if (others.every((o) => !o.moved && now - o.t0 < 260)) {
+        for (const o of others) o.multi = true;
+        this.clearHold();
+        this.push({ type: 'bash' });
+        return;
+      }
     }
-    // Halten = schwerer Angriff
-    this.clearHeavy();
+    this.clearHold();
     const id = e.pointerId;
-    this.heavyTimer = window.setTimeout(() => {
+    this.holdTimer = window.setTimeout(() => {
       const p = this.right.get(id);
-      if (p && !p.drag && !this.blocking && Math.hypot(p.x - p.x0, p.y - p.y0) < 16) {
+      if (p && !p.moved && !p.multi && Math.hypot(p.x - p.x0, p.y - p.y0) < 16) {
         p.heavyFired = true;
         this.push({ type: 'heavy' });
       }
-    }, 320);
+    }, HOLD_MS);
   }
 
-  private clearHeavy(): void {
-    if (this.heavyTimer !== null) window.clearTimeout(this.heavyTimer);
-    this.heavyTimer = null;
+  private clearHold(): void {
+    if (this.holdTimer !== null) window.clearTimeout(this.holdTimer);
+    this.holdTimer = null;
   }
 
   private moveEv(e: PointerEvent): void {
@@ -147,19 +192,35 @@ export class TouchInput {
       return;
     }
     const p = this.right.get(e.pointerId);
-    if (!p) return;
-    const dx = e.clientX - p.x;
-    const dy = e.clientY - p.y;
+    if (!p || p.multi) return;
+    const ddx = e.clientX - p.x;
+    const ddy = e.clientY - p.y;
     p.x = e.clientX;
     p.y = e.clientY;
-    const total = Math.hypot(p.x - p.x0, p.y - p.y0);
-    const age = performance.now() - p.t0;
-    if (!p.drag && total > 16 && age > 170) p.drag = true;
-    if (p.drag && !this.blocking) {
-      this.camDelta.x += dx;
-      this.camDelta.y += dy;
-    } else if (p.drag && this.blocking) {
-      this.camDelta.x += dx * 0.6;
+    const dx = p.x - p.x0;
+    const dy = p.y - p.y0;
+    const dist = Math.hypot(dx, dy);
+    if (this.gestureMode && this.locked) {
+      // Deckung über die Zugrichtung
+      if (dist > 22) {
+        p.moved = true;
+        this.clearHold();
+        const d = TouchInput.dirOf(dx, dy);
+        if (d !== 'down' && d !== p.lastGuard) {
+          p.lastGuard = d;
+          this.push({ type: 'guard', dir: d });
+        }
+      }
+      return;
+    }
+    // Kamera
+    if (!p.moved && dist > 16 && (performance.now() - p.t0 > 160 || !this.gestureMode)) {
+      p.moved = true;
+      this.clearHold();
+    }
+    if (p.moved) {
+      this.camDelta.x += ddx;
+      this.camDelta.y += ddy;
     }
   }
 
@@ -174,83 +235,76 @@ export class TouchInput {
     const p = this.right.get(e.pointerId);
     if (!p) return;
     this.right.delete(e.pointerId);
-    if (this.scheme !== 'gestures') return;
-    if (this.blocking) {
-      if (this.right.size === 0) {
-        this.blocking = false;
-        this.push({ type: 'blockEnd' });
-      }
-      return;
-    }
-    this.clearHeavy();
+    if (!this.gestureMode || p.multi) return;
+    this.clearHold();
     if (p.heavyFired) return;
     const dx = p.x - p.x0;
     const dy = p.y - p.y0;
     const dist = Math.hypot(dx, dy);
     const age = performance.now() - p.t0;
-    if (!p.drag && dist < 16) {
-      // Kurz = leicht. Lang gehalten, aber der Halte-Timer kam (z. B. bei Rucklern) nicht dran = schwer
-      this.push({ type: age < 320 ? 'light' : 'heavy' });
-    } else if (age < 300 && dist > 45) {
-      // Wischen
-      if (Math.abs(dx) > Math.abs(dy)) this.push({ type: 'roll', dir: dx > 0 ? 'right' : 'left' });
-      else if (dy > 0) this.push({ type: 'roll', dir: 'back' });
-      else this.push({ type: 'bash' });
+    if (dist < 16) {
+      // Tippen = leicht, lange gehalten (falls der Timer nicht dran kam) = schwer
+      this.push({ type: age < HOLD_MS ? 'light' : 'heavy' });
+      return;
+    }
+    if (age < FLICK_MS && dist > 50) {
+      const d = TouchInput.dirOf(dx, dy);
+      if (d === 'down') this.push({ type: 'roll', dir: 'stick' });
+      else if (this.locked) this.push({ type: 'parry', dir: d });
+      else if (d === 'left' || d === 'right') this.push({ type: 'roll', dir: d });
     }
   }
 }
 
-/** Tasten für Schema B */
+/** Tasten für Schema B und die gemeinsamen Tasten */
 export function bindButtons(root: HTMLElement, input: TouchInput): void {
-  const attack = root.querySelector<HTMLButtonElement>('#btn-attack')!;
-  let attackT = 0;
-  let heavyTimer: number | null = null;
-  let heavyFired = false;
+  const btn = (sel: string) => root.querySelector<HTMLButtonElement>(sel);
+  const press = (b: HTMLButtonElement, fn: () => void) => {
+    b.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      b.classList.add('pressed');
+      fn();
+    });
+    const up = () => b.classList.remove('pressed');
+    b.addEventListener('pointerup', up);
+    b.addEventListener('pointercancel', up);
+    b.addEventListener('pointerleave', up);
+  };
+
+  // Schlag: tippen = leicht, halten = schwer
+  const attack = btn('#btn-attack')!;
+  let t0 = 0;
+  let timer: number | null = null;
+  let fired = false;
   attack.addEventListener('pointerdown', (e) => {
     e.preventDefault();
     e.stopPropagation();
     attack.classList.add('pressed');
-    attackT = performance.now();
-    heavyFired = false;
-    heavyTimer = window.setTimeout(() => {
-      heavyFired = true;
+    t0 = performance.now();
+    fired = false;
+    timer = window.setTimeout(() => {
+      fired = true;
       input.push({ type: 'heavy' });
-    }, 320);
+    }, HOLD_MS);
   });
   const attackUp = () => {
     if (!attack.classList.contains('pressed')) return;
     attack.classList.remove('pressed');
-    if (heavyTimer !== null) window.clearTimeout(heavyTimer);
-    if (!heavyFired && performance.now() - attackT < 320) input.push({ type: 'light' });
+    if (timer !== null) window.clearTimeout(timer);
+    if (!fired) input.push({ type: performance.now() - t0 < HOLD_MS ? 'light' : 'heavy' });
   };
   attack.addEventListener('pointerup', attackUp);
   attack.addEventListener('pointercancel', attackUp);
   attack.addEventListener('pointerleave', attackUp);
 
-  const block = root.querySelector<HTMLButtonElement>('#btn-block')!;
-  block.addEventListener('pointerdown', (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    block.classList.add('pressed');
-    input.push({ type: 'blockStart' });
-  });
-  const blockUp = () => {
-    if (!block.classList.contains('pressed')) return;
-    block.classList.remove('pressed');
-    input.push({ type: 'blockEnd' });
-  };
-  block.addEventListener('pointerup', blockUp);
-  block.addEventListener('pointercancel', blockUp);
-  block.addEventListener('pointerleave', blockUp);
-
-  const simple = (sel: string, a: Action) => {
-    const b = root.querySelector<HTMLButtonElement>(sel)!;
-    b.addEventListener('pointerdown', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      input.push(a);
-    });
-  };
-  simple('#btn-roll', { type: 'roll', dir: 'back' });
-  simple('#btn-bash', { type: 'bash' });
+  for (const d of ['top', 'left', 'right'] as Dir[]) {
+    const b = btn(`#btn-g-${d}`);
+    if (b) press(b, () => input.push({ type: 'guard', dir: d }));
+  }
+  press(btn('#btn-parry')!, () => input.push({ type: 'parry' }));
+  press(btn('#btn-bash')!, () => input.push({ type: 'bash' }));
+  press(btn('#btn-roll')!, () => input.push({ type: 'roll', dir: 'stick' }));
+  const lock = document.getElementById('btn-lock') as HTMLButtonElement | null;
+  if (lock) press(lock, () => input.push({ type: 'lock' }));
 }

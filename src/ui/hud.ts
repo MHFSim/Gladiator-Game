@@ -1,4 +1,6 @@
+import type { Vector3 } from '@babylonjs/core';
 import type { Settings } from '../core/settings';
+import type { GuardInfo } from '../game/game';
 import { saveSettings } from '../core/settings';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -12,10 +14,12 @@ export class Hud {
 
   constructor(
     private readonly settings: Settings,
-    hooks: {
+    private readonly hooks: {
       onScheme: (s: Settings['scheme']) => void;
       onTime: (h: number) => void;
       onPause: (paused: boolean) => void;
+      onDifficulty: (i: number) => void;
+      project: (world: Vector3) => { x: number; y: number } | null;
       rendererLabel: string;
       tierLabel: string;
     },
@@ -31,6 +35,13 @@ export class Hud {
     const time = $<HTMLInputElement>('set-time');
     const battery = $<HTMLInputElement>('set-battery');
     const fps = $<HTMLInputElement>('set-fps');
+    const diff = $<HTMLSelectElement>('set-difficulty');
+    diff.value = String(settings.difficulty);
+    diff.addEventListener('change', () => {
+      settings.difficulty = parseInt(diff.value, 10);
+      saveSettings(settings);
+      hooks.onDifficulty(settings.difficulty);
+    });
     const timeLabel = $('time-label');
     const help = $('help-text');
 
@@ -117,16 +128,77 @@ export class Hud {
 
   showControlsHint(): void {
     if (this.settings.scheme === 'gestures') {
-      this.hint('Links ziehen: laufen · Rechts tippen: Schlag · Halten: schwerer Schlag', 4.5);
-      window.setTimeout(() => this.hint('Wischen: Rolle · nach oben: Schildstoß · Zwei Finger: Block', 4.5), 4800);
+      this.hint('Rechts Daumen schieben: Deckung · tippen: Schlag · halten: schwer', 5);
+      window.setTimeout(() => this.hint('Schnell wischen: Parade · nach unten: Rolle · zwei Finger: Deckung brechen', 5), 5200);
+      window.setTimeout(() => this.hint('Blocken passiert von selbst, wenn deine Deckung (gold) zum Angriff (rot) passt', 5), 10400);
     } else {
-      this.hint('Links ziehen: laufen · Rechts wischen: Kamera · Tasten: kämpfen', 5);
+      this.hint('Pfeile: Deckung · Schlag tippen/halten · Parade im richtigen Moment', 5);
+      window.setTimeout(() => this.hint('Blocken passiert von selbst, wenn deine Deckung (gold) zum Angriff (rot) passt', 5), 5200);
     }
   }
 
-  setBars(hp: number, st: number): void {
+  setBars(hp: number, st: number, exhausted: boolean): void {
     this.hpFill.style.width = `${hp}%`;
     this.stFill.style.width = `${st}%`;
+    this.stFill.style.opacity = exhausted ? String(0.4 + 0.4 * Math.abs(Math.sin(performance.now() / 120))) : '1';
+  }
+
+  private gw = $('guard-widget');
+  private gwParts = {
+    top: this.gw.querySelector<HTMLElement>('.gw-top')!,
+    left: this.gw.querySelector<HTMLElement>('.gw-left')!,
+    right: this.gw.querySelector<HTMLElement>('.gw-right')!,
+  };
+  private foeHp = $('foe-hp-fill');
+  private foeSt = $('foe-st-fill');
+  private dirButtons = {
+    top: document.getElementById('btn-g-top'),
+    left: document.getElementById('btn-g-left'),
+    right: document.getElementById('btn-g-right'),
+  };
+
+  guard(info: GuardInfo | null): void {
+    if (!info) {
+      this.gw.hidden = true;
+      return;
+    }
+    const p = this.hooks.project(info.anchor);
+    if (!p) {
+      this.gw.hidden = true;
+      return;
+    }
+    this.gw.hidden = false;
+    this.gw.style.transform = `translate(${p.x}px, ${p.y}px)`;
+    for (const k of ['top', 'left', 'right'] as const) {
+      const el = this.gwParts[k];
+      el.classList.toggle('mine', info.mine === k);
+      el.classList.toggle('foe', info.foe === k);
+      el.classList.toggle('incoming', info.incoming === k);
+      el.classList.toggle('heavy', info.incoming === k && info.heavy);
+      this.dirButtons[k]?.classList.toggle('active', info.mine === k);
+    }
+    this.foeHp.style.width = `${info.foeHp}%`;
+    this.foeSt.style.width = `${info.foeSt}%`;
+  }
+
+  floatText(world: Vector3, text: string, kind: 'good' | 'bad' | 'big' | '' = ''): void {
+    const p = this.hooks.project(world);
+    if (!p) return;
+    const el = document.createElement('div');
+    el.className = 'float ' + kind + (kind === 'big' ? ' good' : '');
+    el.textContent = text;
+    el.style.left = `${p.x + (Math.random() - 0.5) * 30}px`;
+    el.style.top = `${p.y}px`;
+    $('float-layer').appendChild(el);
+    window.setTimeout(() => el.remove(), 1000);
+  }
+
+  score(player: number, foe: number): void {
+    $('score').textContent = player + foe > 0 ? `${player} : ${foe}` : '';
+  }
+
+  setLocked(on: boolean): void {
+    $('btn-lock').classList.toggle('on', on);
   }
 
   setFps(fps: number): void {
