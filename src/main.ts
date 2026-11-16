@@ -10,6 +10,7 @@ import { bindButtons, TouchInput } from './input/touch';
 import { createEnvironment } from './render/environment';
 import { Hud } from './ui/hud';
 import { loadHero } from './game/hero';
+import { Sound } from './audio/sound';
 import { Menu } from './ui/menu';
 
 const params = new URLSearchParams(location.search);
@@ -122,7 +123,9 @@ async function boot(): Promise<void> {
     if (p.z < 0 || p.z > 1) return null;
     return { x: p.x, y: p.y };
   };
+  const sound = new Sound(settings.sound);
   const hud = new Hud(settings, {
+    onSound: (on) => sound.setEnabled(on),
     onAssist: (m) => {
       if (game) game.blockAssist = m;
     },
@@ -134,7 +137,7 @@ async function boot(): Promise<void> {
     tierLabel: tier,
   });
   hud.onCheer(() => input.push({ type: 'cheer' }));
-  game = new Game(scene, camera, arena, player, dummy, input, hud, settings.difficulty);
+  game = new Game(scene, camera, arena, player, dummy, input, hud, settings.difficulty, sound);
   const g = game;
   g.blockAssist = settings.blockAssist;
   const hero = loadHero();

@@ -8,6 +8,7 @@ export interface Settings {
   renderer: RendererChoice;
   timeOfDay: number; // Stunden, 6.0 – 20.5
   battery: boolean;
+  sound: boolean;
   showFps: boolean;
   installHintSeen: boolean;
   difficulty: number; // 0..4
@@ -22,6 +23,7 @@ const DEFAULTS: Settings = {
   renderer: 'webgl2',
   timeOfDay: 16.5,
   battery: false,
+  sound: true,
   showFps: false,
   installHintSeen: false,
   difficulty: 1,

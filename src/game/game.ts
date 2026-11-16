@@ -9,6 +9,8 @@ import { AiController } from './ai';
 import { blockSideFor, COMBAT, Fighter, type ActiveAttack, type Dir, type FighterEvents } from './fighter';
 import { Fx } from './fx';
 import type { FighterInfo, Stats } from './hero';
+import type { Sound } from '../audio/sound';
+import { Spectacle, type Deed, type Verdict } from './spectacle';
 
 const TAU = Math.PI * 2;
 
@@ -27,6 +29,10 @@ export interface HudHooks {
   score(player: number, foe: number): void;
   setLocked(on: boolean): void;
   foeName(text: string): void;
+  favor(mine: number, foe: number): void;
+  vote(p: number | null, label?: string): void;
+  thumb(v: 'missio' | 'iugula' | null): void;
+  cinematic(on: boolean): void;
 }
 
 export const WINS_NEEDED = 2;
@@ -38,6 +44,7 @@ export interface MatchResult {
   foe: FighterInfo;
   parries: number;
   pvp: boolean;
+  verdict: Verdict;
 }
 
 export interface NetSetup {
@@ -60,6 +67,7 @@ interface NetFighter {
   hp: number;
   st: number;
   ex: boolean;
+  fv: number;
   at: { d: Dir; hv: boolean; ii: number; wu: number } | null;
 }
 
@@ -68,7 +76,7 @@ interface Snap {
   recv: number;
 }
 
-type NetAction = Exclude<Action, { type: 'roll' } | { type: 'lock' } | { type: 'cheer' }> | { type: 'roll'; v: [number, number] };
+type NetAction = Exclude<Action, { type: 'roll' } | { type: 'lock' }> | { type: 'roll'; v: [number, number] };
 
 export interface GuardInfo {
   anchor: Vector3; // Weltposition über dem Gegner
@@ -114,6 +122,7 @@ export class Game implements FighterEvents {
     private readonly input: TouchInput,
     private readonly hud: HudHooks,
     difficulty: number,
+    readonly sound: Sound,
   ) {
     this.player = new Fighter(playerG, 'Du', this);
     this.foe = new Fighter(foeG, 'Gegner', this);
@@ -121,8 +130,47 @@ export class Game implements FighterEvents {
     this.foe.target = this.player;
     this.ai = new AiController(this.foe, this.player, difficulty);
     this.fx = new Fx(scene);
+    this.spec = new Spectacle(arena.crowd, sound, {
+      now: () => this.now,
+      isAuthority: () => this.role !== 'guest',
+      player: () => this.player,
+      foe: () => this.foe,
+      hint: (t, sec) => this.hud.hint(t, sec),
+      float: (f, t, good) => this.float(this.chest(f), t, (f === this.player) === good ? 'good' : 'bad'),
+      send: (ev) => this.send('ev', ev),
+      vote: (p, label) => this.hud.vote(p, label),
+      thumb: (v) => this.hud.thumb(v),
+      heal: (f, hp) => {
+        f.g.hp = Math.min(f.stats.hpMax, f.g.hp + hp);
+        f.g.stamina = f.stats.staminaMax;
+        this.float(this.chest(f), `Geschenk des Volkes +${hp}`, f === this.player ? 'good' : 'bad');
+        if (f === this.player) this.hud.hint('Das Publikum liebt dich: Wein und Brot fliegen in die Arena!', 2.5);
+      },
+      pelt: (f) => {
+        f.stagger(0.6, 'hit_head', 1.2);
+        f.drain(15);
+        this.float(this.chest(f), 'Faules Obst!', f === this.player ? 'bad' : 'good');
+        if (f === this.player) this.hud.hint('Das Publikum bewirft dich – zeig mehr Mut!', 2.5);
+      },
+      finisher: (w, l) => this.finisher(w, l),
+      done: (v) => this.ceremonyDone(v),
+    });
     this.resetPositions();
     hud.score(0, 0);
+  }
+
+  readonly spec: Spectacle;
+  private slowmo = 0;
+  private pendingResult: Omit<MatchResult, 'verdict'> | null = null;
+
+  /** Ton lokal abspielen und beim Gast auch */
+  private sfx(n: 'clash' | 'block' | 'hit' | 'whoosh' | 'fall' | 'horn', h = false): void {
+    (this.sound[n] as (h: boolean) => void).call(this.sound, h);
+    this.send('ev', { k: 'sfx', n, h });
+  }
+
+  private deed(d: Deed, f: Fighter): void {
+    this.spec.note(d, f, f === this.player ? this.foe : this.player);
   }
 
   private resetPositions(): void {
@@ -165,7 +213,7 @@ export class Game implements FighterEvents {
       const other = this.player;
       (this as { player: Fighter }).player = me;
       (this as { foe: Fighter }).foe = other;
-      net.on('snap', (d) => this.onSnap(d as { f: [NetFighter, NetFighter] }));
+      net.on('snap', (d) => this.onSnap(d as { f: [NetFighter, NetFighter]; x?: number }));
       net.on('anim', (d) => {
         const m = d as { w: 0 | 1; cmd: AnimCmd };
         // w = 0: Gastgeber-Figur (hier Gegner), 1: Gast-Figur (hier ich)
@@ -229,9 +277,10 @@ export class Game implements FighterEvents {
   /** Neuer Kampf: alle wieder auf die Beine, Stand 0:0 */
   rematch(): void {
     if (this.role !== 'guest') {
-      for (const f of [this.player, this.foe]) if (f.mode === 'dead') f.revive();
+      for (const f of [this.player, this.foe]) if (f.mode === 'dead' || f.mode === 'stagger') f.standUp();
     }
     this.roundOver = false;
+    this.sfx('horn');
     this.resetMatch();
     this.send('ev', { k: 'rematch' });
   }
@@ -240,6 +289,9 @@ export class Game implements FighterEvents {
     this.wins = 0;
     this.losses = 0;
     this.matchOver = false;
+    this.slowmo = 0;
+    this.scene.animationTimeScale = 1;
+    this.spec.resetMatch();
     this.hud.score(0, 0);
     this.hud.foeName(`${this.foe.info.name} · Stufe ${this.foe.info.level}`);
     for (const f of [this.player, this.foe]) {
@@ -306,6 +358,7 @@ export class Game implements FighterEvents {
       hp: f.g.hp,
       st: f.g.stamina,
       ex: f.exhausted,
+      fv: Math.round(f.favor),
       at: a && this.now < a.impactAt ? { d: a.dir, hv: a.heavy, ii: a.impactAt - this.now, wu: a.impactAt - a.start } : null,
     };
   }
@@ -321,6 +374,9 @@ export class Game implements FighterEvents {
         break;
       case 'guard':
         f.setGuard(a.dir);
+        break;
+      case 'cheer':
+        this.doCheer(f);
         break;
       case 'parry':
         f.parry(a.dir ?? f.guard);
@@ -372,13 +428,25 @@ export class Game implements FighterEvents {
         if (e.m) {
           this.matchOver = true;
           const par = e.p as [number, number];
-          window.setTimeout(() => this.onMatchEnd?.({ won: e.w === 'guest', wins: this.wins, losses: this.losses, foe: this.foe.info, parries: par[1], pvp: true }), 2200);
+          this.pendingResult = { won: e.w === 'guest', wins: this.wins, losses: this.losses, foe: this.foe.info, parries: par[1], pvp: true };
         } else this.hud.hint(e.w === 'guest' ? 'Sieg! Der Gegner liegt im Sand.' : 'Du bist gefallen …', 3.5);
         break;
       }
       case 'rematch':
         this.resetMatch();
         this.onRematch?.();
+        break;
+      case 'sfx':
+        (this.sound[e.n as 'clash'] as (h: boolean) => void).call(this.sound, !!e.h);
+        break;
+      case 'cer':
+        this.spec.onRemote(e);
+        if (e.ph === 'verdict') this.guestVerdict = e.v as Verdict;
+        if (e.ph === 'fall') this.slowmo = 1.4;
+        break;
+      case 'done':
+        if (this.pendingResult) this.onMatchEnd?.({ ...this.pendingResult, verdict: (e.v as Verdict) ?? this.guestVerdict });
+        this.pendingResult = null;
         break;
       case 'next':
         this.hud.hint('Nächste Runde – kämpft!', 2);
@@ -387,7 +455,10 @@ export class Game implements FighterEvents {
   }
 
   /** Gast: Schnappschuss empfangen */
-  private onSnap(d: { f: [NetFighter, NetFighter] }): void {
+  private guestVerdict: Verdict = 'missio';
+
+  private onSnap(d: { f: [NetFighter, NetFighter]; x?: number }): void {
+    if (typeof d.x === 'number') this.spec.setRemoteExcite(d.x);
     this.snaps.push({ f: d.f, recv: performance.now() });
     if (this.snaps.length > 3) this.snaps.shift();
     const host = d.f[0];
@@ -396,11 +467,19 @@ export class Game implements FighterEvents {
     const p = this.player;
     p.g.hp = me.hp;
     p.g.stamina = me.st;
+    p.favor = me.fv ?? 50;
+    if (this.spec.inCeremony) {
+      // Während der Zeremonie bestimmt der Gastgeber auch die eigene Figur
+      p.pos.x = me.p[0];
+      p.pos.z = me.p[1];
+      p.g.setHeading(me.h);
+    }
     p.exhaustedUntil = me.ex ? this.now + 0.2 : 0;
     if (this.now >= this.guestRollUntil) p.mode = me.m as Fighter['mode'];
     const f = this.foe;
     f.g.hp = host.hp;
     f.g.stamina = host.st;
+    f.favor = host.fv ?? 50;
     f.mode = host.m as Fighter['mode'];
     f.guard = host.g;
     this.foeAttackLocal = host.at ? { d: host.at.d, hv: host.at.hv, impactAt: this.now + host.at.ii, wu: host.at.wu } : null;
@@ -458,6 +537,7 @@ export class Game implements FighterEvents {
       case 'light':
       case 'heavy':
       case 'bash':
+      case 'cheer':
         this.net.send('act', a);
         break;
       case 'lock':
@@ -472,7 +552,12 @@ export class Game implements FighterEvents {
 
   /** Gast: Bildaufbau ohne eigene Kampfregeln */
   private updateGuest(dt: number): void {
+    if (this.slowmo > 0) {
+      this.slowmo -= dt;
+      this.scene.animationTimeScale = this.slowmo > 0 ? 0.35 : 1;
+    }
     this.now += dt;
+    this.spec.update(dt);
     if (this.hitStop > 0) {
       this.hitStop -= dt;
       this.scene.animationTimeScale = this.hitStop > 0 ? 0.06 : 1;
@@ -483,11 +568,14 @@ export class Game implements FighterEvents {
       this.hud.setLocked(true);
     }
     this.input.locked = this.locked;
-    for (const a of this.input.takeActions()) this.sendGuestAction(a);
+    const acts = this.input.takeActions();
+    if (!this.spec.inCeremony) for (const a of acts) this.sendGuestAction(a);
     this.interpolateFoe();
     if (this.now >= this.guestRollUntil && this.player.mode === 'roll') this.player.mode = 'free';
-    this.movePlayer(dt);
-    this.integrate(this.player, dt);
+    if (!this.spec.inCeremony) {
+      this.movePlayer(dt);
+      this.integrate(this.player, dt);
+    }
     for (const f of [this.player, this.foe]) f.g.animator.update(dt);
     // Eingabe an den Gastgeber (30-mal pro Sekunde)
     this.inTimer += dt;
@@ -497,6 +585,7 @@ export class Game implements FighterEvents {
       this.net.send('in', { p: [p.pos.x, p.pos.z], h: p.g.heading, ly: p.g.legYaw, v: [p.vel.x, p.vel.z], bw: p.backwards, g: p.guard });
     }
     this.updateCamera(dt);
+    this.hud.favor(this.player.favor, this.foe.favor);
     // HUD: Angriff des Gegners aus dem Schnappschuss
     this.hud.setBars(this.pct(this.player, 'hp'), this.pct(this.player, 'st'), this.player.exhausted);
     const fa = this.foeAttackLocal;
@@ -520,7 +609,7 @@ export class Game implements FighterEvents {
   private updateHostNet(dt: number): void {
     const r = this.remoteGuest;
     const f = this.foe;
-    if (r) {
+    if (r && !this.spec.inCeremony) {
       const dx = r.p[0] - f.pos.x;
       const dz = r.p[1] - f.pos.z;
       const d = Math.hypot(dx, dz);
@@ -537,7 +626,7 @@ export class Game implements FighterEvents {
     this.snapTimer += dt;
     if (this.snapTimer >= 0.05 && this.net) {
       this.snapTimer = 0;
-      this.net.send('snap', { f: [this.netFighter(this.player), this.netFighter(this.foe)] });
+      this.net.send('snap', { f: [this.netFighter(this.player), this.netFighter(this.foe)], x: Math.round(this.spec.excite * 100) / 100 });
     }
   }
 
@@ -545,10 +634,15 @@ export class Game implements FighterEvents {
 
   attackStart(f: Fighter, a: ActiveAttack): void {
     if (f === this.player && this.role === 'solo') this.ai.onFoeAttack(a, this.now);
-    else if (this.blockAssist === 'auto') this.autoGuard = { dir: blockSideFor(a.dir), at: this.now + 0.22 };
+    if (f === this.foe && this.blockAssist === 'auto') this.autoGuard = { dir: blockSideFor(a.dir), at: this.now + 0.22 };
+    const wait = Math.max(0, a.impactAt - this.now - 0.16);
+    window.setTimeout(() => {
+      if (f.attack === a) this.sfx('whoosh', a.heavy);
+    }, wait * 1000);
   }
 
   feint(f: Fighter): void {
+    this.deed('feint', f);
     if (f === this.player) {
       this.ai.onFoeFeint();
       this.float(this.chest(f), 'Finte', 'good');
@@ -593,6 +687,7 @@ export class Game implements FighterEvents {
 
     if (this.now < D.invulnUntil) {
       this.float(this.chest(D), 'Ausgewichen', youHit ? 'bad' : 'good');
+      this.deed('dodge', D);
       return;
     }
     const need = blockSideFor(a.dir);
@@ -608,6 +703,8 @@ export class Game implements FighterEvents {
       this.setHitStop(0.14);
       this.setShake(0.3);
       this.float(this.chest(D), 'Parade!', youHit ? 'bad' : 'good');
+      this.sfx('clash', true);
+      this.deed('parry', D);
       return;
     }
 
@@ -620,6 +717,8 @@ export class Game implements FighterEvents {
         this.sparks(contact);
         this.float(this.chest(D), 'Deckung bricht', youHit ? 'good' : 'bad');
         this.setHitStop(0.08);
+        this.sfx('block', true);
+        this.deed('heavy', A);
         if (D.takeHit(dmg, 'hit_chest', a.heavy)) return this.kill(D, push);
         D.stagger(0.8, 'shield_break');
         D.guardBrokenUntil = this.now + 1.0;
@@ -632,6 +731,9 @@ export class Game implements FighterEvents {
       this.setShake(a.heavy ? 0.18 : 0.1);
       this.setHitStop(a.heavy ? 0.07 : 0.04);
       this.float(this.chest(D), 'Geblockt', youHit ? '' : 'good');
+      if (a.dir === 'top' && Math.random() < 0.5) this.sfx('clash');
+      else this.sfx('block', a.heavy);
+      this.deed('block', D);
       return;
     }
 
@@ -662,6 +764,8 @@ export class Game implements FighterEvents {
     this.setShake(a.heavy ? 0.4 : 0.22);
     this.setHitStop(a.heavy ? 0.1 : 0.06);
     this.float(this.chest(D), `${zone.name} −${dmg}`, youHit ? (a.heavy ? 'big' : 'good') : 'bad');
+    this.sfx('hit', a.heavy);
+    this.deed(zoneKey === 'top' ? 'head' : a.heavy ? 'heavy' : 'hit', A);
     if (D.takeHit(dmg, zone.anim, a.heavy)) return this.kill(D, push);
     this.impulse(D, push.scale(a.heavy ? 2.6 : 1.4));
   }
@@ -698,14 +802,18 @@ export class Game implements FighterEvents {
     this.setShake(0.25);
     this.setHitStop(0.06);
     this.float(this.chest(D), 'Deckung gebrochen!', youBash ? 'good' : 'bad');
+    this.sfx('block', true);
+    this.deed('bash', A);
   }
 
   private kill(D: Fighter, push: Vector3): void {
     D.die();
     this.impulse(D, push.scale(1.5));
     this.setHitStop(0.25);
+    window.setTimeout(() => this.sfx('fall'), 450);
     if (this.roundOver) return;
     this.roundOver = true;
+    this.deed('kill', D === this.player ? this.foe : this.player);
     if (D === this.foe) {
       this.wins++;
       this.hud.hint('Sieg! Der Gegner liegt im Sand.', 3.5);
@@ -718,9 +826,51 @@ export class Game implements FighterEvents {
     this.send('ev', { k: 'round', w: D === this.foe ? 'host' : 'guest', s: [this.wins, this.losses], m: over, p: [this.player.parries, this.foe.parries] });
     if (over) {
       this.matchOver = true;
-      const r: MatchResult = { won: D === this.foe, wins: this.wins, losses: this.losses, foe: this.foe.info, parries: this.player.parries, pvp: this.role === 'host' };
-      window.setTimeout(() => this.onMatchEnd?.(r), 2200);
+      this.pendingResult = { won: D === this.foe, wins: this.wins, losses: this.losses, foe: this.foe.info, parries: this.player.parries, pvp: this.role === 'host' };
+      this.slowmo = 1.4;
+      this.spec.start(D === this.foe ? this.player : this.foe, D);
     } else window.setTimeout(() => this.newRound(), 4500);
+  }
+
+  /** Todesstoß nach „Iugula!“ */
+  private finisher(w: Fighter, l: Fighter): void {
+    w.mode = 'free';
+    w.faceTarget();
+    w.lastAction = w.g.animator.play('heavy', {
+      range: [1.9, 3.1],
+      speed: 0.9,
+      fadeIn: 0.1,
+      events: [
+        {
+          at: 0.42,
+          fn: () => {
+            const p = l.pos.add(new Vector3(0, l.g.chestHeight, 0));
+            const dir = l.pos.subtract(w.pos).normalize();
+            for (let i = 0; i < 3; i++) this.blood(p.add(new Vector3(0, i * 0.12, 0)), dir);
+            this.sfx('hit', true);
+            this.setShake(0.5);
+            this.setHitStop(0.18);
+            l.mode = 'dead';
+            l.g.animator.play('death', { fadeIn: 0.05, loop: true });
+            window.setTimeout(() => l.g.animator.pause('death'), l.g.animator.durationOf('death') * 900);
+            window.setTimeout(() => this.sfx('fall'), 500);
+          },
+        },
+      ],
+    });
+  }
+
+  private ceremonyDone(v: Verdict): void {
+    this.send('ev', { k: 'done', v });
+    if (this.pendingResult) this.onMatchEnd?.({ ...this.pendingResult, verdict: v });
+    this.pendingResult = null;
+  }
+
+  private doCheer(f: Fighter): void {
+    if (f.mode !== 'free' || this.spec.inCeremony) return;
+    const d = Vector3.Distance(f.pos, (f === this.player ? this.foe : this.player).pos);
+    if (d > 2.6) f.lastAction = f.g.animator.play('cheer', { speed: 1.3 });
+    this.spec.cheer(f);
   }
 
   private newRound(): void {
@@ -730,6 +880,7 @@ export class Game implements FighterEvents {
     }
     this.roundOver = false;
     this.ai.reset(this.now);
+    this.spec.resetRound();
     this.hud.hint('Nächste Runde – kämpft!', 2);
     this.send('ev', { k: 'next' });
   }
@@ -783,10 +934,7 @@ export class Game implements FighterEvents {
         this.hud.setLocked(this.locked);
         break;
       case 'cheer':
-        if (p.mode === 'free') {
-          p.g.animator.play('cheer');
-          this.hud.hint('Das Publikum fehlt noch – kommt in Phase 3', 2);
-        }
+        this.doCheer(p);
         break;
     }
   }
@@ -805,6 +953,11 @@ export class Game implements FighterEvents {
       const slow = this.hitStop > 0 ? 0.06 : 1;
       this.scene.animationTimeScale = slow;
       dt *= slow;
+    } else if (this.slowmo > 0) {
+      this.slowmo -= dt;
+      const slow = this.slowmo > 0 ? 0.35 : 1;
+      this.scene.animationTimeScale = slow;
+      dt *= slow;
     }
     this.now += dt;
     for (const f of [this.player, this.foe]) f.tick(this.now, dt);
@@ -818,7 +971,9 @@ export class Game implements FighterEvents {
     if (this.manualUnlock && dist > COMBAT.lockRange + 4) this.manualUnlock = false;
     this.input.locked = this.locked;
 
-    for (const a of this.input.takeActions()) this.handle(a);
+    const ceremony = this.spec.inCeremony;
+    const acts = this.input.takeActions();
+    if (!ceremony) for (const a of acts) this.handle(a);
     // Gnadenfrist abarbeiten
     const due = this.grace.filter((g) => g.at <= this.now);
     this.grace = this.grace.filter((g) => g.at > this.now);
@@ -828,13 +983,17 @@ export class Game implements FighterEvents {
       if (this.player.mode === 'free') this.player.setGuard(this.autoGuard.dir);
       this.autoGuard = null;
     }
-    if (!freeze && this.role === 'solo') this.aiMove = this.ai.update(this.now);
+    if (!freeze && this.role === 'solo' && !ceremony) this.aiMove = this.ai.update(this.now);
+    this.spec.update(dt);
 
-    this.movePlayer(dt);
+    if (ceremony) this.moveCeremony(dt);
+    else {
+      this.movePlayer(dt);
+      if (this.role !== 'host') this.moveFoe(dt, freeze);
+    }
     if (this.role === 'host') this.updateHostNet(dt);
-    else this.moveFoe(dt, freeze);
     for (const f of [this.player, this.foe]) {
-      if (!(this.role === 'host' && f === this.foe)) this.integrate(f, dt);
+      if (!(this.role === 'host' && f === this.foe && !ceremony)) this.integrate(f, dt);
       f.g.animator.update(dt);
     }
     this.arena.update(dt, daylight);
@@ -848,6 +1007,7 @@ export class Game implements FighterEvents {
 
   private updateHud(): void {
     const p = this.player;
+    this.hud.favor(p.favor, this.foe.favor);
     this.hud.setBars(this.pct(p, 'hp'), this.pct(p, 'st'), p.exhausted);
     if (!this.locked || this.foe.mode === 'dead') {
       this.hud.guard(null);
@@ -937,6 +1097,24 @@ export class Game implements FighterEvents {
     this.steer(this.player, wish, mag, this.locked, dt);
   }
 
+  /** Zeremonie: der Sieger geht beim Todesurteil zum Verlierer, sonst stehen beide */
+  private moveCeremony(dt: number): void {
+    const c = this.spec.cer;
+    for (const f of [this.player, this.foe]) {
+      if (c && c.phase === 'walk' && f === c.winner) {
+        const d = c.loser.pos.subtract(f.pos);
+        d.y = 0;
+        const far = d.length() > 1.75;
+        if (f.mode !== 'free') f.mode = 'free';
+        this.steer(f, far ? d.normalize() : Vector3.Zero(), far ? 0.55 : 0, true, dt);
+      } else if (f.mode === 'free') {
+        this.steer(f, Vector3.Zero(), 0, true, dt);
+      } else {
+        f.vel.scaleInPlace(Math.max(0, 1 - dt * 5));
+      }
+    }
+  }
+
   private moveFoe(dt: number, freeze: boolean): void {
     const m = freeze ? { dir: Vector3.Zero(), speed: 0 } : this.aiMove;
     this.steer(this.foe, m.dir, Math.min(1, m.speed / this.maxSpeed(this.foe, true)), true, dt);
@@ -969,12 +1147,27 @@ export class Game implements FighterEvents {
   /* ---------- Kamera ---------- */
 
   private updateCamera(dt: number): void {
+    if (this.cine !== this.spec.inCeremony) {
+      this.cine = this.spec.inCeremony;
+      this.hud.cinematic(this.cine);
+    }
     const d = this.input.takeCamDelta();
     const p = this.player;
     const target = p.pos.add(new Vector3(0, 1.5, 0));
     let camPos: Vector3;
     let look: Vector3;
-    if (this.locked && this.foe.mode !== 'dead') {
+    if (this.spec.inCeremony) {
+      // Kinoperspektive: Kaiserloge im Hintergrund, langsame Fahrt
+      this.cerCam += dt;
+      const mid = Vector3.Lerp(p.pos, this.foe.pos, 0.5);
+      const toEmp = this.arena.crowd.emperor.subtract(mid);
+      toEmp.y = 0;
+      const base = Math.atan2(toEmp.x, toEmp.z) + Math.PI + 0.42 + this.cerCam * 0.05;
+      camPos = mid.add(new Vector3(Math.sin(base) * 6.4, 1.35 + this.cerCam * 0.02, Math.cos(base) * 6.4));
+      look = Vector3.Lerp(mid.add(new Vector3(0, 1.0, 0)), this.arena.crowd.emperor, 0.2);
+      this.yaw = base + Math.PI;
+    } else if (this.locked && this.foe.mode !== 'dead') {
+      this.cerCam = 0;
       // Hinter dem Spieler, Blick auf beide Kämpfer
       const toFoe = this.foe.pos.subtract(p.pos);
       toFoe.y = 0;
@@ -1017,6 +1210,9 @@ export class Game implements FighterEvents {
     this.camLook = Vector3.Lerp(this.camLook, look, Math.min(1, dt * 10));
     this.camera.setTarget(this.camLook);
   }
+
+  private cerCam = 0;
+  private cine = false;
 
   /** Für Screenshots: feste Kameraposition */
   debugCamera(pos: Vector3, target: Vector3): void {

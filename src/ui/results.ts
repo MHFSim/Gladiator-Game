@@ -18,7 +18,14 @@ export class Results {
     const title = $('r-title');
     title.textContent = r.won ? 'VICTORIA' : 'NIEDERLAGE';
     title.classList.toggle('lost', !r.won);
-    $('r-sub').textContent = `${r.wins} : ${r.losses} gegen ${r.foe.name} (Stufe ${r.foe.level})`;
+    const fate = r.won
+      ? r.verdict === 'missio'
+        ? 'Der Kaiser schenkte deinem Gegner das Leben.'
+        : 'Iugula! Du hast den Todesstoß gesetzt.'
+      : r.verdict === 'missio'
+        ? 'Der Kaiser schenkte dir das Leben.'
+        : 'Der Kaiser verlangte deinen Tod – im Ludus flickt man dich wieder zusammen.';
+    $('r-sub').textContent = `${r.wins} : ${r.losses} gegen ${r.foe.name} (Stufe ${r.foe.level}) · ${fate}`;
     const lines = $('r-lines');
     let gained = 0;
     let levels = 0;

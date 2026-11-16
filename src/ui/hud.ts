@@ -19,6 +19,7 @@ export class Hud {
       onTime: (h: number) => void;
       onPause: (paused: boolean) => void;
       onAssist: (m: Settings['blockAssist']) => void;
+      onSound: (on: boolean) => void;
       project: (world: Vector3) => { x: number; y: number } | null;
       rendererLabel: string;
       tierLabel: string;
@@ -88,6 +89,13 @@ export class Hud {
       hooks.onTime(settings.timeOfDay);
     });
     time.addEventListener('change', () => saveSettings(settings));
+    const snd = $<HTMLInputElement>('set-sound');
+    snd.checked = settings.sound;
+    snd.addEventListener('change', () => {
+      settings.sound = snd.checked;
+      saveSettings(settings);
+      hooks.onSound(snd.checked);
+    });
     battery.addEventListener('change', () => {
       settings.battery = battery.checked;
       saveSettings(settings);
@@ -206,6 +214,42 @@ export class Hud {
 
   score(player: number, foe: number): void {
     $('score').textContent = player + foe > 0 ? `${player} : ${foe}` : '';
+  }
+
+  private favFill = $('fav-fill');
+  private favFoe = $('fav-foe');
+  favor(mine: number, foe: number): void {
+    this.favFill.style.width = `${mine}%`;
+    this.favFoe.style.left = `${foe}%`;
+    this.favFill.classList.toggle('hot', mine >= 80);
+    this.favFill.classList.toggle('cold', mine <= 20);
+  }
+
+  vote(p: number | null, label = ''): void {
+    const el = $('vote');
+    if (p === null) {
+      el.hidden = true;
+      return;
+    }
+    el.hidden = false;
+    $('vote-label').textContent = label;
+    // p = Anteil für Gnade: Nadel links (Missio) bei p = 1
+    $('vote-needle').style.left = `${(1 - p) * 100}%`;
+  }
+
+  thumb(v: 'missio' | 'iugula' | null): void {
+    const el = $('thumb');
+    if (!v) {
+      el.hidden = true;
+      return;
+    }
+    el.hidden = false;
+    el.className = v;
+    $('thumb-text').textContent = v === 'missio' ? 'MISSIO – Gnade!' : 'IUGULA!';
+  }
+
+  cinematic(on: boolean): void {
+    $('hud').classList.toggle('cine', on);
   }
 
   foeName(text: string): void {

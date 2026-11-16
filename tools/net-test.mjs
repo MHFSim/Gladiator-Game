@@ -97,8 +97,10 @@ const xp = (p) => p.evaluate(() => JSON.parse(localStorage.getItem('seg.hero.v1'
 const before = await xp(guest);
 for (let i = 0; i < 2; i++) {
   await host.evaluate(() => window.__game.kill(window.__game.player, window.__game.player.pos.subtract(window.__game.foe.pos).normalize()));
-  await sleep(i === 0 ? 30000 : 20000);
+  if (i === 0) await sleep(30000);
 }
+await host.waitForFunction(() => !document.getElementById('result').hidden, { timeout: 400000, polling: 500 });
+await guest.waitForFunction(() => !document.getElementById('result').hidden, { timeout: 120000, polling: 500 });
 const res = (p) => p.evaluate(() => ({ shown: !document.getElementById('result').hidden, title: document.getElementById('r-title').textContent, lines: document.getElementById('r-lines').textContent }));
 console.log('Ergebnis Host:', JSON.stringify(await res(host)));
 console.log('Ergebnis Gast:', JSON.stringify(await res(guest)));

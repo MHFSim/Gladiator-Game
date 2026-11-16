@@ -15,6 +15,7 @@ import {
 } from '@babylonjs/core';
 import type { QualityProfile } from '../core/quality';
 import type { Environment } from '../render/environment';
+import { buildCrowd, type Crowd } from './crowd';
 import { box, disc, GeoBuilder, ringBand, ringFlat, ringSlope } from '../render/geometry';
 import {
   clothMaps,
@@ -45,6 +46,7 @@ export interface Obstacle {
 
 export interface Arena {
   obstacles: Obstacle[];
+  crowd: Crowd;
   update(dt: number, daylight: number): void;
 }
 
@@ -173,6 +175,7 @@ export function buildCapua(scene: Scene, env: Environment, q: QualityProfile): A
     r += depth;
     y += rise;
   }
+  const crowd = buildCrowd(scene, env, q, { r0: R + 0.7, y0: H, steps, depth, rise });
   const stepsMesh = gSteps.build('steps', scene);
   stepsMesh.material = matStone;
   stepsMesh.receiveShadows = true;
@@ -388,8 +391,10 @@ export function buildCapua(scene: Scene, env: Environment, q: QualityProfile): A
   let t = 0;
   return {
     obstacles,
+    crowd,
     update(dt: number, daylight: number) {
       t += dt;
+      crowd.update(dt);
       for (const f of fires) {
         if (!f.light) continue;
         const flick = 0.85 + Math.sin(t * 13 + f.base) * 0.08 + Math.sin(t * 27.3 + f.base * 2) * 0.06;

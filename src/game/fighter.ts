@@ -68,6 +68,7 @@ export class Fighter {
   stats: Stats = derive(zeroAttrs());
   info: FighterInfo = { name: 'Gladiator', level: 1 };
   parries = 0;
+  favor = 50;
   damageTaken = 0;
 
   constructor(
@@ -298,6 +299,15 @@ export class Fighter {
   blockReact(cost: number): void {
     this.spend(cost);
     if (this.mode === 'free') this.lastAction = this.g.animator.play('block', { range: [0.1, 0.55], speed: 1.6, fadeIn: 0.04, fadeOut: 0.15 });
+  }
+
+  /** Sofort wieder stehen (neuer Kampf) */
+  standUp(): void {
+    this.g.animator.resume('death');
+    this.g.animator.stop('death');
+    this.g.animator.stop('get_up');
+    this.mode = 'free';
+    this.refill();
   }
 
   /** Volle Lebenspunkte und Ausdauer */

@@ -46,6 +46,7 @@
       <div id="bars">
         <div class="bar hp"><div id="hp-fill"></div></div>
         <div class="bar st"><div id="st-fill"></div></div>
+        <div class="fav-row"><span class="fav-label">Gunst</span><div class="bar fav"><div id="fav-fill"></div><div id="fav-foe"></div></div></div>
       </div>
       <div id="hint"></div>
 
@@ -70,6 +71,14 @@
       <div id="float-layer"></div>
       <div id="score"></div>
       <div id="foe-name"></div>
+      <div id="vote" hidden>
+        <div id="vote-label"></div>
+        <div class="vote-bar"><span class="vl">MISSIO</span><div class="vote-track"><div id="vote-needle"></div></div><span class="vr">IUGULA</span></div>
+      </div>
+      <div id="thumb" hidden>
+        <svg viewBox="0 0 100 120" aria-hidden="true"><path d="M40 8c7 0 12 5 12 12v30h26c8 0 13 6 12 13l-5 34c-1 7-7 12-14 12H38c-8 0-14-6-14-14V60c0-5 3-9 7-11l1-29c0-7 1-12 8-12z"/><path class="fl" d="M52 62h30M52 76h30M52 90h26"/></svg>
+        <div id="thumb-text"></div>
+      </div>
 
       <div id="stick-base"><div id="stick-knob"></div></div>
     </div>
@@ -189,6 +198,7 @@
       <label>Tageszeit <span id="time-label"></span>
         <input id="set-time" type="range" min="6" max="20.5" step="0.25" />
       </label>
+      <label class="row"><input id="set-sound" type="checkbox" /> Ton (Publikum, Kampf)</label>
       <label class="row"><input id="set-battery" type="checkbox" /> Akku-Modus (30 FPS)</label>
       <label class="row"><input id="set-fps" type="checkbox" /> FPS anzeigen</label>
       <p class="help" id="help-text"></p>

@@ -5,7 +5,7 @@ Gebaut mit [Babylon.js 9](https://www.babylonjs.com), läuft komplett über GitH
 
 **Spielen:** https://mhfsim.github.io/Gladiator-Game/
 
-## Stand: Phase 2 – Mehrspieler und Heldenfortschritt
+## Stand: Phase 3 – Publikum, Wetter, Kolosseum (in Arbeit)
 
 **Arena und Grafik (Phase 0)**
 - Ludus von Capua, komplett im Code erzeugt: bemalte Podiumsmauer, zwei Tore mit Fallgitter, Sitzstufen,
@@ -40,6 +40,13 @@ Gebaut mit [Babylon.js 9](https://www.babylonjs.com), läuft komplett über GitH
 - Training: fünf KI-Gegner von Rekrut (Stufe 1) bis Primus Palus (Stufe 40).
 - Mehrspieler: Der Gastgeber wählt „Offen“ (Stufe zählt voll) oder „Angeglichen“ (nur die Verteilung zählt).
 - Gespeichert im Browser; „Als Datei sichern“ / „Aus Datei laden“ zum Umziehen auf ein anderes Handy.
+
+**Publikum und Kaiser (Phase 3)**
+- Rund 1.500 Zuschauer in den Rängen (je nach Grafikstufe), im Shader animiert: wippen, jubeln, Arme hoch, Welle.
+- Gunst des Publikums: Paraden, Treffer, Finten und Ausweichen bringen Gunst, lange Pausen kosten sie. Die ✊-Taste heizt an – im richtigen Moment tobt die Menge, wer verliert, wird ausgebuht.
+- Sehr hohe Gunst: Wein und Brot fliegen in die Arena (Leben und Ausdauer). Sehr niedrige Gunst: faules Obst.
+- Kampfende: Zeitlupe, der Verlierer sinkt auf die Knie, das Volk stimmt ab, der Kaiser zeigt den Daumen. Missio = Gnade, Iugula = Todesstoß.
+- Ton ohne Audiodateien (Web Audio): Menge, Jubel, Buhrufe, Metall, Schild, Treffer, Fanfare. Abschaltbar in den Einstellungen.
 
 ## Steuerung
 
