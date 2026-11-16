@@ -5,7 +5,7 @@ Gebaut mit [Babylon.js 9](https://www.babylonjs.com), läuft komplett über GitH
 
 **Spielen:** https://mhfsim.github.io/Gladiator-Game/
 
-## Stand: Phase 1 – Richtungskampf
+## Stand: Phase 2 – Mehrspieler und Heldenfortschritt
 
 **Arena und Grafik (Phase 0)**
 - Ludus von Capua, komplett im Code erzeugt: bemalte Podiumsmauer, zwei Tore mit Fallgitter, Sitzstufen,
@@ -32,6 +32,14 @@ Gebaut mit [Babylon.js 9](https://www.babylonjs.com), läuft komplett über GitH
 - Das Handy des Gastgebers entscheidet über alle Treffer, Paraden und Blocks; der Gast sieht dasselbe mit kurzer Verzögerung.
 - Verlässt der Gast die Arena, kämpft der Gastgeber gegen die KI weiter.
 - Test ohne Internet: zwei Tabs mit `?net=local` (siehe `tools/net-test.mjs`).
+
+**Dein Gladiator (Ludus)**
+- Im Hauptmenü: Name, Stufe 1 bis 50, Erfahrungsbalken, Siege und Niederlagen.
+- Erfahrung gibt es nur für Siege (ein Kampf = 2 gewonnene Runden). Stärkere Gegner geben mehr, dazu Bonus für Paraden und einen makellosen 2:0-Sieg.
+- Pro Stufe 3 Attributpunkte: Vis (schwere Schläge, Schildstoß), Corpus (Leben), Spiritus (Ausdauer), Celeritas (Tempo, Paradefenster), Acies (Kopftreffer, leichte Schläge), Gloria (Gunst des Publikums). Ab 40 Punkten wirkt jeder Punkt nur noch halb.
+- Training: fünf KI-Gegner von Rekrut (Stufe 1) bis Primus Palus (Stufe 40).
+- Mehrspieler: Der Gastgeber wählt „Offen“ (Stufe zählt voll) oder „Angeglichen“ (nur die Verteilung zählt).
+- Gespeichert im Browser; „Als Datei sichern“ / „Aus Datei laden“ zum Umziehen auf ein anderes Handy.
 
 ## Steuerung
 

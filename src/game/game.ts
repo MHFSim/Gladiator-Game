@@ -8,6 +8,7 @@ import type { Transport } from '../net/transport';
 import { AiController } from './ai';
 import { blockSideFor, COMBAT, Fighter, type ActiveAttack, type Dir, type FighterEvents } from './fighter';
 import { Fx } from './fx';
+import type { FighterInfo, Stats } from './hero';
 
 const TAU = Math.PI * 2;
 
@@ -25,6 +26,24 @@ export interface HudHooks {
   guard(info: GuardInfo | null): void;
   score(player: number, foe: number): void;
   setLocked(on: boolean): void;
+  foeName(text: string): void;
+}
+
+export const WINS_NEEDED = 2;
+
+export interface MatchResult {
+  won: boolean;
+  wins: number;
+  losses: number;
+  foe: FighterInfo;
+  parries: number;
+  pvp: boolean;
+}
+
+export interface NetSetup {
+  /** 0 = Gastgeber, 1 = Gast */
+  stats: [Stats, Stats];
+  info: [FighterInfo, FighterInfo];
 }
 
 export type Role = 'solo' | 'host' | 'guest';
@@ -132,9 +151,14 @@ export class Game implements FighterEvents {
   onNetEnd: ((reason: string) => void) | null = null;
 
   /** Wechselt die Rolle. Gastgeber: der Gegner wird vom Gast gesteuert. Gast: das eigene Handy zeigt nur an. */
-  startNet(role: Role, net: Transport): void {
+  startNet(role: Role, net: Transport, setup: NetSetup): void {
     this.role = role;
     this.net = net;
+    // Vor dem Rollentausch: player = Gastgeber-Figur, foe = Gast-Figur
+    this.player.stats = setup.stats[0];
+    this.player.info = setup.info[0];
+    this.foe.stats = setup.stats[1];
+    this.foe.info = setup.info[1];
     if (role === 'guest') {
       // Aus Sicht des Gasts ist er selbst der zweite Kämpfer: Rollen tauschen
       const me = this.foe;
@@ -148,6 +172,13 @@ export class Game implements FighterEvents {
         (m.w === 0 ? this.foe : this.player).g.animator.apply(m.cmd);
       });
       net.on('ev', (d) => this.onEvent(d as Record<string, unknown>));
+      // Reste eines früheren Trainingskampfs aufräumen
+      for (const f of [this.player, this.foe]) {
+        if (f.mode === 'dead') {
+          f.g.animator.resume('death');
+          f.mode = 'free';
+        }
+      }
     } else if (role === 'host') {
       this.player.g.animator.listener = (cmd) => net.send('anim', { w: 0, cmd });
       this.foe.g.animator.listener = (cmd) => net.send('anim', { w: 1, cmd });
@@ -158,7 +189,8 @@ export class Game implements FighterEvents {
       });
       net.on('act', (d) => this.handleRemote(d as NetAction));
     }
-    this.resetMatch();
+    if (role === 'host') this.rematch();
+    else this.resetMatch();
   }
 
   /** Netzspiel beenden (Verbindung weg): zurück zum Training */
@@ -168,20 +200,52 @@ export class Game implements FighterEvents {
       this.foe.g.animator.listener = null;
       this.role = 'solo';
       this.net = null;
+      if (this.soloFoe) {
+        this.foe.stats = this.soloFoe.stats;
+        this.foe.info = this.soloFoe.info;
+      }
       this.hud.hint(reason + ' – weiter gegen die KI', 3);
-      this.resetMatch();
+      this.rematch();
     } else if (this.role === 'guest') {
       this.onNetEnd?.(reason);
     }
   }
 
+  private soloFoe: { stats: Stats; info: FighterInfo } | null = null;
+  onMatchEnd: ((r: MatchResult) => void) | null = null;
+  onRematch: (() => void) | null = null;
+  matchOver = false;
+
+  /** Training: eigene Werte und KI-Gegner festlegen */
+  setupSolo(me: Stats, meInfo: FighterInfo, foe: Stats, foeInfo: FighterInfo, aiLevel: number): void {
+    this.player.stats = me;
+    this.player.info = meInfo;
+    this.foe.stats = foe;
+    this.foe.info = foeInfo;
+    this.soloFoe = { stats: foe, info: foeInfo };
+    this.ai.setLevel(aiLevel);
+  }
+
+  /** Neuer Kampf: alle wieder auf die Beine, Stand 0:0 */
+  rematch(): void {
+    if (this.role !== 'guest') {
+      for (const f of [this.player, this.foe]) if (f.mode === 'dead') f.revive();
+    }
+    this.roundOver = false;
+    this.resetMatch();
+    this.send('ev', { k: 'rematch' });
+  }
+
   resetMatch(): void {
     this.wins = 0;
     this.losses = 0;
+    this.matchOver = false;
     this.hud.score(0, 0);
+    this.hud.foeName(`${this.foe.info.name} · Stufe ${this.foe.info.level}`);
     for (const f of [this.player, this.foe]) {
-      f.g.hp = COMBAT.hpMax;
-      f.g.stamina = COMBAT.staminaMax;
+      if (this.role !== 'guest') f.refill();
+      f.parries = 0;
+      f.damageTaken = 0;
       f.vel.setAll(0);
     }
     if (this.role !== 'guest') this.resetPositions();
@@ -305,9 +369,17 @@ export class Game implements FighterEvents {
         this.wins = s[1];
         this.losses = s[0];
         this.hud.score(this.wins, this.losses);
-        this.hud.hint(e.w === 'guest' ? 'Sieg! Der Gegner liegt im Sand.' : 'Du bist gefallen …', 3.5);
+        if (e.m) {
+          this.matchOver = true;
+          const par = e.p as [number, number];
+          window.setTimeout(() => this.onMatchEnd?.({ won: e.w === 'guest', wins: this.wins, losses: this.losses, foe: this.foe.info, parries: par[1], pvp: true }), 2200);
+        } else this.hud.hint(e.w === 'guest' ? 'Sieg! Der Gegner liegt im Sand.' : 'Du bist gefallen …', 3.5);
         break;
       }
+      case 'rematch':
+        this.resetMatch();
+        this.onRematch?.();
+        break;
       case 'next':
         this.hud.hint('Nächste Runde – kämpft!', 2);
         break;
@@ -426,7 +498,7 @@ export class Game implements FighterEvents {
     }
     this.updateCamera(dt);
     // HUD: Angriff des Gegners aus dem Schnappschuss
-    this.hud.setBars(this.player.g.hp, this.player.g.stamina, this.player.exhausted);
+    this.hud.setBars(this.pct(this.player, 'hp'), this.pct(this.player, 'st'), this.player.exhausted);
     const fa = this.foeAttackLocal;
     if (!this.locked || this.foe.mode === 'dead') this.hud.guard(null);
     else
@@ -438,9 +510,9 @@ export class Game implements FighterEvents {
         heavy: !!fa?.hv,
         impactIn: fa && this.now < fa.impactAt && this.blockAssist !== 'off' ? fa.impactAt - this.now : null,
         windup: fa?.wu ?? 1,
-        parryWindow: COMBAT.parryWindow,
-        foeHp: this.foe.g.hp,
-        foeSt: this.foe.g.stamina,
+        parryWindow: COMBAT.parryWindow + this.player.stats.parryBonus,
+        foeHp: this.pct(this.foe, 'hp'),
+        foeSt: this.pct(this.foe, 'st'),
       });
   }
 
@@ -544,7 +616,7 @@ export class Game implements FighterEvents {
     if (canBlock && D.guard === need) {
       if (D.exhausted) {
         // Erschöpft: die Deckung bricht unter dem Schlag
-        const dmg = Math.round(a.def.damage * 0.5);
+        const dmg = Math.round(a.def.damage * 0.5 * this.mul(A, a, false));
         this.sparks(contact);
         this.float(this.chest(D), 'Deckung bricht', youHit ? 'good' : 'bad');
         this.setHitStop(0.08);
@@ -554,8 +626,8 @@ export class Game implements FighterEvents {
         return;
       }
       this.sparks(contact);
-      D.blockReact(a.def.damage * COMBAT.blockStaminaFactor * (a.heavy ? 1.4 : 1));
-      if (a.heavy) D.g.hp = Math.max(1, D.g.hp - a.def.damage * COMBAT.heavyChip);
+      D.blockReact(a.def.damage * this.mul(A, a, false) * COMBAT.blockStaminaFactor * (a.heavy ? 1.4 : 1));
+      if (a.heavy) D.g.hp = Math.max(1, D.g.hp - a.def.damage * this.mul(A, a, false) * COMBAT.heavyChip);
       this.impulse(D, push.scale(a.heavy ? 1.6 : 0.8));
       this.setShake(a.heavy ? 0.18 : 0.1);
       this.setHitStop(a.heavy ? 0.07 : 0.04);
@@ -583,7 +655,7 @@ export class Game implements FighterEvents {
     if (zoneKey === 'arm' && a.dir === 'left') armor = COMBAT.armor.manica;
     if (zoneKey === 'leg' && a.dir === 'right') armor = COMBAT.armor.greave;
     const weak = this.now < A.weakUntil ? 0.75 : 1;
-    const dmg = Math.round(a.def.damage * zone.mult * (1 - armor) * weak);
+    const dmg = Math.round(a.def.damage * this.mul(A, a, zoneKey === 'top') * zone.mult * (1 - armor) * weak);
     if (zone.debuff === 'weak') D.weakUntil = this.now + 3;
     if (zone.debuff === 'slow') D.slowUntil = this.now + 3;
     this.blood(contact, push);
@@ -592,6 +664,11 @@ export class Game implements FighterEvents {
     this.float(this.chest(D), `${zone.name} −${dmg}`, youHit ? (a.heavy ? 'big' : 'good') : 'bad');
     if (D.takeHit(dmg, zone.anim, a.heavy)) return this.kill(D, push);
     this.impulse(D, push.scale(a.heavy ? 2.6 : 1.4));
+  }
+
+  /** Schadensfaktor aus den Attributen des Angreifers */
+  private mul(A: Fighter, a: ActiveAttack, head: boolean): number {
+    return (a.heavy ? A.stats.heavyMul : A.stats.lightMul) * (head ? A.stats.headMul : 1);
   }
 
   bashImpact(A: Fighter): void {
@@ -616,7 +693,7 @@ export class Game implements FighterEvents {
     const push = D.pos.subtract(A.pos).normalize();
     D.stagger(COMBAT.bash.staggerTime, 'shield_break');
     D.guardBrokenUntil = this.now + COMBAT.bash.staggerTime + 0.25;
-    D.drain(COMBAT.bash.targetStamina);
+    D.drain(COMBAT.bash.targetStamina * A.stats.bashMul);
     this.impulse(D, push.scale(4));
     this.setShake(0.25);
     this.setHitStop(0.06);
@@ -637,17 +714,19 @@ export class Game implements FighterEvents {
       this.hud.hint('Du bist gefallen …', 3.5);
     }
     this.hud.score(this.wins, this.losses);
-    this.send('ev', { k: 'round', w: D === this.foe ? 'host' : 'guest', s: [this.wins, this.losses] });
-    window.setTimeout(() => this.newRound(), 4500);
+    const over = this.wins >= WINS_NEEDED || this.losses >= WINS_NEEDED;
+    this.send('ev', { k: 'round', w: D === this.foe ? 'host' : 'guest', s: [this.wins, this.losses], m: over, p: [this.player.parries, this.foe.parries] });
+    if (over) {
+      this.matchOver = true;
+      const r: MatchResult = { won: D === this.foe, wins: this.wins, losses: this.losses, foe: this.foe.info, parries: this.player.parries, pvp: this.role === 'host' };
+      window.setTimeout(() => this.onMatchEnd?.(r), 2200);
+    } else window.setTimeout(() => this.newRound(), 4500);
   }
 
   private newRound(): void {
     for (const f of [this.player, this.foe]) {
       if (f.mode === 'dead') f.revive();
-      else {
-        f.g.hp = COMBAT.hpMax;
-        f.g.stamina = COMBAT.staminaMax;
-      }
+      else f.refill();
     }
     this.roundOver = false;
     this.ai.reset(this.now);
@@ -763,9 +842,13 @@ export class Game implements FighterEvents {
     this.updateHud();
   }
 
+  private pct(f: Fighter, k: 'hp' | 'st'): number {
+    return k === 'hp' ? (100 * f.g.hp) / f.stats.hpMax : (100 * f.g.stamina) / f.stats.staminaMax;
+  }
+
   private updateHud(): void {
     const p = this.player;
-    this.hud.setBars(p.g.hp, p.g.stamina, p.exhausted);
+    this.hud.setBars(this.pct(p, 'hp'), this.pct(p, 'st'), p.exhausted);
     if (!this.locked || this.foe.mode === 'dead') {
       this.hud.guard(null);
       return;
@@ -779,16 +862,16 @@ export class Game implements FighterEvents {
       heavy: !!fa?.heavy,
       impactIn: fa && this.now < fa.impactAt && this.blockAssist !== 'off' ? fa.impactAt - this.now : null,
       windup: fa ? fa.impactAt - fa.start : 1,
-      parryWindow: COMBAT.parryWindow,
-      foeHp: this.foe.g.hp,
-      foeSt: this.foe.g.stamina,
+      parryWindow: COMBAT.parryWindow + p.stats.parryBonus,
+      foeHp: this.pct(this.foe, 'hp'),
+      foeSt: this.pct(this.foe, 'st'),
     });
   }
 
   /* ---------- Bewegung ---------- */
 
   private maxSpeed(f: Fighter, locked: boolean): number {
-    let s = locked ? 2.6 : 6.0;
+    let s = (locked ? 2.6 : 6.0) * f.stats.moveMul;
     if (this.now < f.slowUntil) s *= 0.6;
     if (f.exhausted) s *= 0.7;
     return s;

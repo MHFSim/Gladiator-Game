@@ -1,6 +1,7 @@
 import { Vector3 } from '@babylonjs/core';
 import type { Gladiator } from '../gladiators/gladiator';
 import C from '../data/combat.json';
+import { derive, zeroAttrs, type FighterInfo, type Stats } from './hero';
 
 export type Dir = 'top' | 'left' | 'right';
 export type Mode = 'free' | 'attack' | 'parry' | 'bash' | 'roll' | 'stagger' | 'hit' | 'dead';
@@ -64,6 +65,10 @@ export class Fighter {
   rollUntil = 0;
   backwards = false;
   lastAction = 0;
+  stats: Stats = derive(zeroAttrs());
+  info: FighterInfo = { name: 'Gladiator', level: 1 };
+  parries = 0;
+  damageTaken = 0;
 
   constructor(
     readonly g: Gladiator,
@@ -103,8 +108,8 @@ export class Fighter {
     // Ausdauer
     if (this.staminaDelay > 0) this.staminaDelay -= dt;
     else if (this.mode !== 'dead') {
-      const rate = this.exhausted ? COMBAT.staminaRegen * 1.3 : COMBAT.staminaRegen;
-      this.g.stamina = Math.min(COMBAT.staminaMax, this.g.stamina + rate * dt);
+      const rate = this.exhausted ? this.stats.staminaRegen * 1.3 : this.stats.staminaRegen;
+      this.g.stamina = Math.min(this.stats.staminaMax, this.g.stamina + rate * dt);
     }
   }
 
@@ -150,7 +155,7 @@ export class Fighter {
     const range = def.range as [number, number] | undefined;
     const base = this.g.animator.durationOf(def.anim, 1, range); // Länge bei Tempo 1
     const swing = def.speed;
-    const windup = def.windup * (this.exhausted ? 1.15 : 1);
+    const windup = def.windup * this.stats.windupMul * (this.exhausted ? 1.15 : 1);
     const swingFrac = Math.max(0, def.impact - 0.14);
     const swingTime = ((def.impact - swingFrac) * base) / swing;
     const slowTime = Math.max(0.05, windup - swingTime);
@@ -204,7 +209,7 @@ export class Fighter {
     if (this.mode !== 'free') return false;
     this.guard = dir;
     this.parryDir = dir;
-    this.parryUntil = this.now + COMBAT.parryWindow;
+    this.parryUntil = this.now + COMBAT.parryWindow + this.stats.parryBonus;
     this.mode = 'parry';
     this.modeUntil = this.now + COMBAT.parryMissLock;
     this.faceTarget();
@@ -214,6 +219,7 @@ export class Fighter {
 
   /** Erfolgreiche Parade: sofort wieder handlungsfähig (Konter) */
   parrySucceeded(): void {
+    this.parries++;
     this.mode = 'free';
     this.parryUntil = 0;
   }
@@ -248,7 +254,7 @@ export class Fighter {
     if (this.attack) this.g.animator.cancel(this.attack.actionId, 0.08);
     this.attack = null;
     this.spend(COMBAT.roll.stamina);
-    const speed = COMBAT.roll.speed;
+    const speed = COMBAT.roll.speed * this.stats.rollMul;
     const dur = this.g.animator.durationOf('roll', speed);
     this.mode = 'roll';
     this.modeUntil = this.now + dur * 0.78;
@@ -261,7 +267,7 @@ export class Fighter {
   }
 
   get rollSpeed(): number {
-    const dur = this.g.animator.durationOf('roll', COMBAT.roll.speed);
+    const dur = this.g.animator.durationOf('roll', COMBAT.roll.speed * this.stats.rollMul);
     return COMBAT.roll.distance / (dur * 0.55);
   }
 
@@ -280,6 +286,7 @@ export class Fighter {
 
   takeHit(dmg: number, anim: string, heavy: boolean): boolean {
     this.g.hp = Math.max(0, this.g.hp - dmg);
+    this.damageTaken += dmg;
     if (this.g.hp <= 0) return true;
     this.interruptAttack();
     this.mode = 'hit';
@@ -293,6 +300,13 @@ export class Fighter {
     if (this.mode === 'free') this.lastAction = this.g.animator.play('block', { range: [0.1, 0.55], speed: 1.6, fadeIn: 0.04, fadeOut: 0.15 });
   }
 
+  /** Volle Lebenspunkte und Ausdauer */
+  refill(): void {
+    this.g.hp = this.stats.hpMax;
+    this.g.stamina = this.stats.staminaMax;
+    this.exhaustedUntil = 0;
+  }
+
   die(): void {
     this.interruptAttack();
     this.mode = 'dead';
@@ -302,8 +316,8 @@ export class Fighter {
 
   revive(): void {
     this.g.animator.resume('death');
-    this.g.hp = COMBAT.hpMax;
-    this.g.stamina = COMBAT.staminaMax;
+    this.g.hp = this.stats.hpMax;
+    this.g.stamina = this.stats.staminaMax;
     this.exhaustedUntil = 0;
     this.mode = 'stagger';
     this.modeUntil = this.now + this.g.animator.durationOf('get_up') * 0.85;

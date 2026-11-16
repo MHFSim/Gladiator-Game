@@ -1,8 +1,20 @@
 import QRCode from 'qrcode';
 import type { Game } from '../game/game';
 import { localTransport, newRoomCode, normalizeCode, trysteroTransport, type Transport } from '../net/transport';
+import type { NetSetup } from '../game/game';
+import { AI_LEVELS, AI_NAMES, aiAttrs, balanced, derive, winReward, type Attrs, type Hero } from '../game/hero';
+import type { Settings } from '../core/settings';
+import { saveSettings } from '../core/settings';
+import { HeroScreen } from './heroScreen';
+import { Results } from './results';
 
-const PROTOCOL = 1;
+const PROTOCOL = 2;
+type Screen = 'menu-main' | 'menu-host' | 'menu-join' | 'menu-train' | 'menu-hero';
+interface HeroMsg {
+  name: string;
+  level: number;
+  attrs: Attrs;
+}
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
 /**
@@ -11,13 +23,29 @@ const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as 
 export class Menu {
   open = true;
   private transport: Transport | null = null;
+  private heroScreen: HeroScreen;
+  readonly results: Results;
 
   constructor(
     private readonly game: Game,
+    private readonly hero: Hero,
+    private readonly settings: Settings,
     private readonly onStart: (mode: 'solo' | 'host' | 'guest') => void,
     private readonly netKind: 'webrtc' | 'local',
   ) {
-    $('m-train').onclick = () => this.close('solo');
+    this.heroScreen = new HeroScreen(hero, () => this.show('menu-main'));
+    this.results = new Results(() => this.hero, {
+      again: () => this.game.rematch(),
+      hero: () => this.reopen('menu-hero'),
+      home: () => this.reopen('menu-main'),
+      leave: () => (location.href = location.origin + location.pathname),
+    });
+    game.onMatchEnd = (r) => this.results.show(r, this.game.role);
+    game.onRematch = () => this.results.hide();
+    $('m-hero').onclick = () => this.show('menu-hero');
+    $('m-train').onclick = () => this.showTrain();
+    $('m-train-back').onclick = () => this.show('menu-main');
+    this.applySolo(settings.difficulty);
     $('m-host').onclick = () => this.host();
     $('m-join').onclick = () => this.showJoin();
     $('m-host-back').onclick = () => this.back();
@@ -28,6 +56,7 @@ export class Menu {
       el.value = normalizeCode(el.value);
     });
     $('menu').hidden = false;
+    $('hud').hidden = true;
     // Einladungslink: direkt beitreten
     const room = new URLSearchParams(location.search).get('room');
     if (room) {
@@ -37,8 +66,48 @@ export class Menu {
     }
   }
 
-  private show(id: 'menu-main' | 'menu-host' | 'menu-join'): void {
-    for (const k of ['menu-main', 'menu-host', 'menu-join']) $(k).hidden = k !== id;
+  private show(id: Screen): void {
+    for (const k of ['menu-main', 'menu-host', 'menu-join', 'menu-train', 'menu-hero']) $(k).hidden = k !== id;
+    $('menu').classList.toggle('sub', id === 'menu-hero' || id === 'menu-train');
+    if (id === 'menu-hero') this.heroScreen.show();
+    if (id === 'menu-main') this.heroScreen.refreshCard();
+  }
+
+  /** Zurück ins Menü (nach einem Trainingskampf) */
+  reopen(id: Screen): void {
+    this.open = true;
+    $('menu').hidden = false;
+    $('hud').hidden = true;
+    this.show(id);
+  }
+
+  private heroMsg(): HeroMsg {
+    return { name: this.hero.name, level: this.hero.level, attrs: { ...this.hero.attrs } };
+  }
+
+  /** Eigene Werte und KI-Gegner fürs Training setzen */
+  private applySolo(i: number): void {
+    const lvl = AI_LEVELS[i];
+    this.game.setupSolo(derive(this.hero.attrs), { name: this.hero.name, level: this.hero.level }, derive(aiAttrs(lvl)), { name: AI_NAMES[i], level: lvl }, i);
+  }
+
+  private showTrain(): void {
+    const list = $('train-list');
+    list.innerHTML = '';
+    AI_LEVELS.forEach((lvl, i) => {
+      const b = document.createElement('button');
+      const xp = winReward(this.hero.level, lvl, 0, false, false).base;
+      b.innerHTML = `${AI_NAMES[i]} · Stufe ${lvl}<small>Sieg: ${xp} Erfahrung</small>`;
+      b.onclick = () => {
+        this.settings.difficulty = i;
+        saveSettings(this.settings);
+        this.applySolo(i);
+        this.game.rematch();
+        this.close('solo');
+      };
+      list.appendChild(b);
+    });
+    this.show('menu-train');
   }
 
   private back(): void {
@@ -49,6 +118,7 @@ export class Menu {
 
   private close(mode: 'solo' | 'host' | 'guest'): void {
     $('menu').hidden = true;
+    $('hud').hidden = false;
     this.open = false;
     this.onStart(mode);
   }
@@ -89,19 +159,30 @@ export class Menu {
     let started = false;
     t.onPeerJoin(() => {
       $('host-status').textContent = 'Gegner gefunden, verbinde …';
-      t.send('hello', { v: PROTOCOL, role: 'host' });
+      t.send('hello', { v: PROTOCOL, role: 'host', hero: this.heroMsg() });
     });
     t.on('hello', (d) => {
-      const h = d as { v: number; role: string };
+      const h = d as { v: number; role: string; hero?: HeroMsg };
       if (h.v !== PROTOCOL) {
         $('host-status').textContent = 'Verschiedene Spielversionen – bitte beide Seiten neu laden.';
         return;
       }
-      if (h.role !== 'guest' || started) return;
+      if (h.role !== 'guest' || started || !h.hero) return;
       started = true;
+      const guest = h.hero;
+      const equal = $<HTMLSelectElement>('host-mode').value === 'equal';
+      const me = this.heroMsg();
+      const setup: NetSetup = {
+        stats: [derive(equal ? balanced(me.attrs) : me.attrs), derive(equal ? balanced(guest.attrs) : guest.attrs)],
+        info: [
+          { name: me.name, level: me.level },
+          { name: String(guest.name).slice(0, 18), level: guest.level },
+        ],
+      };
+      $('host-status').textContent = `${setup.info[1].name} (Stufe ${guest.level}) ist da!`;
       this.countdown('host-status', () => {
-        t.send('start', { v: PROTOCOL });
-        this.game.startNet('host', t);
+        t.send('start', { v: PROTOCOL, setup });
+        this.game.startNet('host', t, setup);
         this.close('host');
       });
     });
@@ -134,20 +215,20 @@ export class Menu {
     }, 20000);
     t.onPeerJoin(() => {
       $('join-status').textContent = 'Arena gefunden, verbinde …';
-      t.send('hello', { v: PROTOCOL, role: 'guest' });
+      t.send('hello', { v: PROTOCOL, role: 'guest', hero: this.heroMsg() });
     });
     t.on('hello', (d) => {
       const h = d as { v: number };
       if (h.v !== PROTOCOL) $('join-status').textContent = 'Verschiedene Spielversionen – bitte beide Seiten neu laden.';
       else $('join-status').textContent = 'Verbunden! Der Kampf beginnt …';
       // Antwort, falls unser erstes Hallo zu früh kam
-      t.send('hello', { v: PROTOCOL, role: 'guest' });
+      t.send('hello', { v: PROTOCOL, role: 'guest', hero: this.heroMsg() });
     });
-    t.on('start', () => {
+    t.on('start', (d) => {
       if (started) return;
       started = true;
       window.clearTimeout(timeout);
-      this.game.startNet('guest', t);
+      this.game.startNet('guest', t, (d as { setup: NetSetup }).setup);
       this.close('guest');
     });
     t.onPeerLeave(() => {

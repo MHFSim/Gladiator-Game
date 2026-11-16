@@ -18,7 +18,6 @@ export class Hud {
       onScheme: (s: Settings['scheme']) => void;
       onTime: (h: number) => void;
       onPause: (paused: boolean) => void;
-      onDifficulty: (i: number) => void;
       onAssist: (m: Settings['blockAssist']) => void;
       project: (world: Vector3) => { x: number; y: number } | null;
       rendererLabel: string;
@@ -42,13 +41,6 @@ export class Hud {
       settings.blockAssist = assist.value as Settings['blockAssist'];
       saveSettings(settings);
       hooks.onAssist(settings.blockAssist);
-    });
-    const diff = $<HTMLSelectElement>('set-difficulty');
-    diff.value = String(settings.difficulty);
-    diff.addEventListener('change', () => {
-      settings.difficulty = parseInt(diff.value, 10);
-      saveSettings(settings);
-      hooks.onDifficulty(settings.difficulty);
     });
     const timeLabel = $('time-label');
     const help = $('help-text');
@@ -214,6 +206,10 @@ export class Hud {
 
   score(player: number, foe: number): void {
     $('score').textContent = player + foe > 0 ? `${player} : ${foe}` : '';
+  }
+
+  foeName(text: string): void {
+    $('foe-name').textContent = text;
   }
 
   setLocked(on: boolean): void {

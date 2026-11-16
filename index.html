@@ -69,16 +69,52 @@
       </div>
       <div id="float-layer"></div>
       <div id="score"></div>
+      <div id="foe-name"></div>
 
       <div id="stick-base"><div id="stick-knob"></div></div>
     </div>
 
     <div id="menu" class="screen menu" hidden>
       <div class="title">SANGUIS <span>ET</span> GLORIA</div>
-      <div id="menu-main" class="menu-col">
-        <button id="m-train" class="wide">Training gegen die KI</button>
-        <button id="m-host" class="wide">Arena eröffnen</button>
-        <button id="m-join" class="wide">Arena beitreten</button>
+      <div id="menu-main" class="menu-main">
+        <button id="m-hero" class="hero-card" aria-label="Dein Gladiator">
+          <span class="hc-top"><span id="hc-name"></span><span id="hc-level"></span></span>
+          <span class="xpbar"><span id="hc-xp"></span></span>
+          <span id="hc-xp-text" class="hc-small"></span>
+          <span id="hc-points" class="hc-points"></span>
+        </button>
+        <div class="menu-col">
+          <button id="m-train" class="wide">Training gegen die KI</button>
+          <button id="m-host" class="wide">Arena eröffnen</button>
+          <button id="m-join" class="wide">Arena beitreten</button>
+        </div>
+      </div>
+      <div id="menu-train" class="menu-col" hidden>
+        <div class="small">Wähle deinen Gegner. Erfahrung gibt es nur für einen Sieg (2 Runden gewinnen).</div>
+        <div id="train-list" class="train-list"></div>
+        <button id="m-train-back" class="wide ghost">Zurück</button>
+      </div>
+      <div id="menu-hero" class="hero-screen" hidden>
+        <div class="hs-left">
+          <input id="hs-name" maxlength="18" autocomplete="off" spellcheck="false" aria-label="Name" />
+          <div id="hs-level" class="hs-level"></div>
+          <div class="xpbar"><span id="hs-xp"></span></div>
+          <div id="hs-xp-text" class="hc-small"></div>
+          <div id="hs-record" class="hc-small"></div>
+          <button id="hs-export" class="wide slim">Als Datei sichern</button>
+          <button id="hs-import" class="wide slim">Aus Datei laden</button>
+          <input id="hs-file" type="file" accept=".json,application/json" hidden />
+          <button id="hs-respec" class="wide slim ghost">Punkte neu verteilen</button>
+        </div>
+        <div class="hs-right">
+          <div class="hs-head"><span>Attribute</span><span id="hs-free"></span></div>
+          <div id="hs-attrs"></div>
+          <div class="hs-actions">
+            <button id="hs-apply" class="wide slim">Übernehmen</button>
+            <button id="hs-back" class="wide slim ghost">Zurück</button>
+          </div>
+          <div id="hs-msg" class="hc-small"></div>
+        </div>
       </div>
       <div id="menu-host" class="menu-col" hidden>
         <div class="menu-row">
@@ -89,6 +125,12 @@
             <button id="m-share" class="wide">Link teilen</button>
           </div>
         </div>
+        <label class="small host-mode">Werte
+          <select id="host-mode">
+            <option value="open">Offen – Stufe zählt voll</option>
+            <option value="equal">Angeglichen – nur die Verteilung zählt</option>
+          </select>
+        </label>
         <div id="host-status" class="small">Warte auf einen Gegner …</div>
         <button id="m-host-back" class="wide ghost">Abbrechen</button>
       </div>
@@ -101,21 +143,25 @@
       </div>
     </div>
 
+    <div id="result" class="screen result" hidden>
+      <div id="r-title" class="r-title"></div>
+      <div id="r-sub" class="small"></div>
+      <div id="r-lines" class="r-lines"></div>
+      <div class="r-xp"><span id="r-level"></span><span class="xpbar"><span id="r-xp"></span></span></div>
+      <div id="r-levelup" class="r-levelup"></div>
+      <div class="r-buttons">
+        <button id="r-again" class="wide slim">Nächster Kampf</button>
+        <button id="r-hero" class="wide slim">Held verbessern</button>
+        <button id="r-home" class="wide slim ghost">Ludus</button>
+      </div>
+    </div>
+
     <div id="settings" class="panel" hidden>
       <h2>Einstellungen</h2>
       <label>Steuerung
         <select id="set-scheme">
           <option value="gestures">A: Stick + Gesten</option>
           <option value="buttons">B: Stick + Tasten</option>
-        </select>
-      </label>
-      <label>Gegner
-        <select id="set-difficulty">
-          <option value="0">1 · Rekrut</option>
-          <option value="1">2 · Tiro</option>
-          <option value="2">3 · Veteran</option>
-          <option value="3">4 · Champion</option>
-          <option value="4">5 · Primus Palus</option>
         </select>
       </label>
       <label>Block-Hilfe

@@ -92,4 +92,19 @@ console.log('Gast getroffen? Host:', await state(host));
 console.log('Gast getroffen? Gast:', await state(guest));
 await host.screenshot({ path: `${outDir}/net_host.png` });
 await guest.screenshot({ path: `${outDir}/net_guest.png` });
+// 4) Kampfende: der Gast gewinnt zwei Runden -> Erfahrung nur beim Gast
+const xp = (p) => p.evaluate(() => JSON.parse(localStorage.getItem('seg.hero.v1') ?? 'null'));
+const before = await xp(guest);
+for (let i = 0; i < 2; i++) {
+  await host.evaluate(() => window.__game.kill(window.__game.player, window.__game.player.pos.subtract(window.__game.foe.pos).normalize()));
+  await sleep(i === 0 ? 30000 : 20000);
+}
+const res = (p) => p.evaluate(() => ({ shown: !document.getElementById('result').hidden, title: document.getElementById('r-title').textContent, lines: document.getElementById('r-lines').textContent }));
+console.log('Ergebnis Host:', JSON.stringify(await res(host)));
+console.log('Ergebnis Gast:', JSON.stringify(await res(guest)));
+console.log('Gast-Held vorher/nachher:', JSON.stringify(before?.xp ?? 0), JSON.stringify((await xp(guest))?.level), JSON.stringify((await xp(guest))?.xp));
+await guest.screenshot({ path: `${outDir}/net_guest_result.png` });
+await host.click('#r-again');
+await sleep(8000);
+console.log('Revanche Gast:', JSON.stringify(await res(guest)), await state(guest));
 await browser.close();

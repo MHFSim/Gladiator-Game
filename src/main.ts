@@ -9,6 +9,7 @@ import { Gladiator, GladiatorAssets } from './gladiators/gladiator';
 import { bindButtons, TouchInput } from './input/touch';
 import { createEnvironment } from './render/environment';
 import { Hud } from './ui/hud';
+import { loadHero } from './game/hero';
 import { Menu } from './ui/menu';
 
 const params = new URLSearchParams(location.search);
@@ -122,7 +123,6 @@ async function boot(): Promise<void> {
     return { x: p.x, y: p.y };
   };
   const hud = new Hud(settings, {
-    onDifficulty: (i) => game?.setDifficulty(i),
     onAssist: (m) => {
       if (game) game.blockAssist = m;
     },
@@ -137,12 +137,12 @@ async function boot(): Promise<void> {
   game = new Game(scene, camera, arena, player, dummy, input, hud, settings.difficulty);
   const g = game;
   g.blockAssist = settings.blockAssist;
-  const hudEl = document.getElementById('hud') as HTMLElement;
-  const menu = new Menu(g, (mode) => {
-    hudEl.hidden = false;
-    if (mode === 'solo') hud.showControlsHint();
+  const hero = loadHero();
+  let hinted = false;
+  const menu = new Menu(g, hero, settings, (mode) => {
+    if (mode === 'solo' && !hinted) hud.showControlsHint();
+    hinted = true;
   }, params.get('net') === 'local' ? 'local' : 'webrtc');
-  hudEl.hidden = menu.open;
   g.onNetEnd = (reason) => {
     hud.hint(reason, 3);
     window.setTimeout(() => (location.href = location.origin + location.pathname), 2500);
