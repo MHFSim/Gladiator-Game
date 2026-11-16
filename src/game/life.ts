@@ -3,7 +3,7 @@ import type { Arena } from '../arena/capua';
 import type { AssetContainer } from '@babylonjs/core';
 import { Beast, BEAST, loadBeasts, MODE_CODES, type BeastKind, type BeastMode } from './beasts';
 import type { Fighter } from './fighter';
-import type { MatchMode } from './match';
+import { VENATIO_WAVES, type MatchMode } from './match';
 
 export type EnvHitKind = 'bite' | 'charge' | 'horn' | 'spikes';
 export type EnvHitResult = 'dodge' | 'parry' | 'block' | 'hit';
@@ -26,6 +26,10 @@ export interface LifeHost {
   float(p: Vector3, text: string): void;
   kick(v: number): void;
   send(ev: Record<string, unknown>): void;
+  /** Venatio: alle Wellen überstanden */
+  venatioWon(): void;
+  /** Venatio: neue Welle (für die Anzeige) */
+  wave(n: number): void;
 }
 
 type TrapState = 'idle' | 'warn' | 'up' | 'down' | 'rest';
@@ -65,6 +69,11 @@ export class ArenaLife {
   private spikeMat: PBRMaterial | null = null;
   private bloodyMat: PBRMaterial | null = null;
   private nextEvent = 20;
+  /** Stärke der Tiere (Venatio-Stufe) */
+  power = 1;
+  wave = 0;
+  private waveAt = 0;
+  private spawning = 0;
   private play = { a: 15, b: 15 };
 
   constructor(
@@ -187,6 +196,9 @@ export class ArenaLife {
     this.beasts = [];
     for (const t of this.traps) this.setTrap(t, 'idle', true);
     this.nextEvent = this.host.now() + 16 + Math.random() * 8;
+    this.wave = 0;
+    this.waveAt = this.host.now() + 3;
+    this.spawning = 0;
   }
 
   /** Kampf vorbei: Tiere laufen hinaus */
@@ -196,6 +208,7 @@ export class ArenaLife {
 
   update(dt: number): void {
     const now = this.host.now();
+    if (this.host.authority() && this.host.mode() === 'venatio' && !this.host.calm()) this.waves(now);
     if (this.grate && !this.painted) this.paintGrate(this.grate);
     if (this.host.authority()) {
       if (this.enabled && !this.host.calm()) this.director(now);
@@ -222,6 +235,14 @@ export class ArenaLife {
         }
       }
     }
+    if (this.host.mode() === 'venatio') {
+      // In der Venatio schickt der Spielleiter nur die Fallen, die Tiere kommen in Wellen
+      if (now >= this.nextEvent) {
+        this.nextEvent = now + 20 + Math.random() * 10;
+        for (const t of this.traps) if (t.state === 'idle' && Math.random() < 0.5) this.arm(t);
+      }
+      return;
+    }
     if (now < this.nextEvent) return;
     const group = this.host.mode() !== 'duel';
     this.nextEvent = now + (group ? 18 : 24) + Math.random() * 12;
@@ -242,14 +263,49 @@ export class ArenaLife {
     this.host.kick(0.6);
   }
 
+  /** Venatio: nächste Welle, wenn alle Tiere tot sind */
+  private waves(now: number): void {
+    if (this.spawning > 0) return;
+    if (this.beasts.some((b) => b.alive && b.mode !== 'leave')) {
+      this.waveAt = now + 4;
+      return;
+    }
+    if (now < this.waveAt) return;
+    if (this.wave >= VENATIO_WAVES) {
+      this.waveAt = Infinity;
+      this.host.venatioWon();
+      return;
+    }
+    this.wave++;
+    this.host.wave(this.wave);
+    const extra = Math.max(0, this.host.fighters().length - 2);
+    const plan: [BeastKind, number][][] = [
+      [['wolf', 2]],
+      [['wolf', 3]],
+      [['bull', 1], ['wolf', 2]],
+      [['wolf', 4]],
+      [['bull', 2], ['wolf', 2]],
+    ];
+    const w = plan[Math.min(plan.length - 1, this.wave - 1)];
+    const names = w.map(([k, n]) => `${n} ${k === 'wolf' ? (n === 1 ? 'Wolf' : 'Wölfe') : n === 1 ? 'Stier' : 'Stiere'}`).join(' und ');
+    this.host.announce(this.wave === VENATIO_WAVES ? `Letzte Welle: ${names}!` : `Welle ${this.wave} von ${VENATIO_WAVES}: ${names}`);
+    this.host.sfx('horn');
+    w.forEach(([k, n], i) => this.spawn(k, n + (k === 'wolf' ? extra : 0), i % 2 === 0 ? 1 : -1));
+    this.waveAt = now + 6;
+  }
+
   /** Tiere durch ein Tor am Rand hereinlassen */
-  spawn(kind: BeastKind, n: number): void {
+  spawn(kind: BeastKind, n: number, gate = 0): void {
     if (!this.host.authority()) return;
+    this.spawning++;
     void loadBeasts(this.scene).then((m) => {
+      this.spawning--;
       if (this.host.calm()) return;
-      const side = Math.random() < 0.5 ? 1 : -1;
+      const side = gate || (Math.random() < 0.5 ? 1 : -1);
       for (let i = 0; i < n; i++) {
         const b = new Beast(kind, this.scene, m.get(kind)!, this.caster);
+        b.hpMax = b.hp = Math.round(BEAST[kind].hp * this.power);
+        b.dmgMul = Math.sqrt(this.power);
         const ang = (side > 0 ? Math.PI / 2 : -Math.PI / 2) + (i - (n - 1) / 2) * 0.12;
         b.pos.set(Math.sin(ang) * this.play.a * 0.97, 0, Math.cos(ang) * this.play.b * 0.97);
         b.setHeading(ang + Math.PI);
@@ -412,6 +468,11 @@ export class ArenaLife {
     if (b.mode === 'dead') {
       b.vel.scaleInPlace(Math.max(0, 1 - dt * 6));
       this.integrate(b, dt);
+      // Kadaver nach einer Weile im Sand versinken lassen
+      if (now > b.modeUntil) {
+        b.pos.y -= dt * 0.25;
+        if (now > b.modeUntil + 6) b.dispose();
+      }
       return;
     }
     if (this.host.calm() && b.mode !== 'leave') this.setMode(b, 'leave', 99);
@@ -484,7 +545,7 @@ export class ArenaLife {
         const ang = Math.abs(Math.atan2(Math.sin(Math.atan2(to.x, to.z) - b.heading), Math.cos(Math.atan2(to.x, to.z) - b.heading)));
         if (dist < S.reach + 0.4 && ang < 1.1) {
           this.host.sfx('bite');
-          const res = this.host.envHit(T, S.dmg, b.pos, 'bite');
+          const res = this.host.envHit(T, Math.round(S.dmg * b.dmgMul), b.pos, 'bite');
           if (res === 'parry') {
             this.setMode(b, 'hit', 1.1);
             b.vel.copyFrom(fwd.scale(-3));
@@ -534,7 +595,7 @@ export class ArenaLife {
           b.impactAt = Infinity;
           if (dist < S.reach + 0.5) {
             this.host.sfx('bite');
-            this.host.envHit(T, 18, b.pos, 'horn');
+            this.host.envHit(T, Math.round(18 * b.dmgMul), b.pos, 'horn');
           }
         }
         if (now >= b.modeUntil) {
@@ -562,7 +623,7 @@ export class ArenaLife {
         const across = Math.abs(d.x * b.chargeDir.z - d.z * b.chargeDir.x);
         if (along > -0.2 && along < 1.6 && across < 0.95) {
           b.chargeHit.add(f);
-          this.host.envHit(f, S.dmg, b.pos.subtract(b.chargeDir), 'charge');
+          this.host.envHit(f, Math.round(S.dmg * b.dmgMul), b.pos.subtract(b.chargeDir), 'charge');
         }
       }
       const ahead = b.pos.add(b.chargeDir.scale(1.2));
@@ -697,7 +758,7 @@ export class ArenaLife {
     if (d.length() > 1e-3) d.normalize();
     if (b.hp <= 0) {
       b.hp = 0;
-      this.setMode(b, 'dead', 0);
+      this.setMode(b, 'dead', 25);
       b.vel.copyFrom(d.scale(2));
       b.play('death', false, 1);
       this.host.sfx('fall');
@@ -727,7 +788,7 @@ export class ArenaLife {
       Math.round(b.pos.z * 100) / 100,
       Math.round(b.heading * 100) / 100,
       MODE_CODES.indexOf(b.mode),
-      Math.round((100 * b.hp) / BEAST[b.kind].hp),
+      Math.round((100 * b.hp) / b.hpMax),
     ]);
   }
 
@@ -752,7 +813,7 @@ export class ArenaLife {
       b.setHeading(h);
       const mode = MODE_CODES[m] ?? 'hunt';
       if (mode !== b.mode) this.replicaMode(b, mode);
-      b.hp = (hp / 100) * BEAST[b.kind].hp;
+      b.hp = (hp / 100) * b.hpMax;
     }
     for (const b of this.beasts) if (!seen.has(b.id)) b.dispose();
   }

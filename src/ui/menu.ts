@@ -1,14 +1,14 @@
 import QRCode from 'qrcode';
 import type { Game } from '../game/game';
 import { localTransport, newRoomCode, normalizeCode, trysteroTransport, type Transport } from '../net/transport';
-import { assignTeams, isTeamMode, MODE_NAMES, MODE_SIZE, TEAM_COLORS, type FighterSetup, type MatchMode, type MatchSetup } from '../game/match';
-import { AI_LEVELS, AI_NAMES, aiAttrs, balanced, derive, equippedOf, heroKit, heroStats, winReward, type Attrs, type Hero } from '../game/hero';
+import { VENATIO_WAVES, assignTeams, isTeamMode, MODE_NAMES, MODE_SIZE, TEAM_COLORS, type FighterSetup, type MatchMode, type MatchSetup } from '../game/match';
+import { MAX_ITEMS, AI_LEVELS, AI_NAMES, aiAttrs, balanced, derive, equippedOf, heroKit, heroStats, winReward, type Attrs, type Hero } from '../game/hero';
 import { CLASS_ORDER, CLASSES, type ClassId } from '../data/classes';
-import { aiEquipment, applyItemStats, kitFor, tiersOf, validItem, winDenare, type Equipped, type Item } from '../game/items';
+import { aiEquipment, applyItemStats, kitFor, RARITY, rollLoot, tiersOf, validItem, winDenare, type Equipped, type Item } from '../game/items';
 import type { Settings } from '../core/settings';
 import { saveSettings } from '../core/settings';
 import { HeroScreen } from './heroScreen';
-import { Results } from './results';
+import { Results, type ResultExtra } from './results';
 import type { WeatherKind } from '../render/weather';
 import type { ArenaKind } from '../arena/capua';
 
@@ -16,6 +16,18 @@ const PROTOCOL = 4;
 
 /** Namen für KI-Gladiatoren im Gruppenkampf */
 const GLADIATOR_NAMES = ['Spiculus', 'Priscus', 'Verus', 'Flamma', 'Carpophorus', 'Tetraites', 'Crixus', 'Oenomaus', 'Gannicus', 'Celadus', 'Triumphus', 'Columbus', 'Petraites', 'Hermes', 'Asteropaeus', 'Calamus'];
+
+/** Acht Teilnehmer: der eigene Held und sieben KI-Gladiatoren um die gewählte Stufe */
+function newTourney(i: number): Tourney {
+  const names = shuffle(GLADIATOR_NAMES);
+  const base = AI_LEVELS[i];
+  const entrants: Entrant[] = [{ name: 'Du', cls: 'murmillo', eq: {}, level: 1 }];
+  for (let k = 1; k < 8; k++) {
+    const level = Math.max(1, Math.min(50, base + Math.round((Math.random() - 0.35) * 4)));
+    entrants.push({ name: names[k], cls: randomClass(), eq: aiEquipment(level), level });
+  }
+  return { lvl: i, round: 0, entrants, alive: [0, 1, 2, 3, 4, 5, 6, 7] };
+}
 
 function shuffle<T>(a: T[]): T[] {
   const r = [...a];
@@ -59,6 +71,27 @@ interface HeroMsg {
   attrs: Attrs;
   cls: ClassId;
   items: Item[];
+  rating?: { r: number; rd: number };
+}
+
+type TrainMode = MatchMode | 'tourney';
+
+const TOURNEY_NAMES = ['Rekruten', 'Tirones', 'Veteranen', 'Champions', 'Primi Pali'];
+const ROUND_NAMES = ['Viertelfinale', 'Halbfinale', 'Finale'];
+
+interface Entrant {
+  name: string;
+  cls: ClassId;
+  eq: Equipped;
+  level: number;
+}
+
+interface Tourney {
+  lvl: number;
+  round: number;
+  entrants: Entrant[];
+  /** Noch im Turnier (Index 0 = eigener Held), Paarungen 0-1, 2-3, … */
+  alive: number[];
 }
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -86,7 +119,7 @@ export class Menu {
       home: () => this.reopen('menu-main'),
       leave: () => (location.href = location.origin + location.pathname),
     });
-    game.onMatchEnd = (r) => this.results.show(r, this.game.role);
+    game.onMatchEnd = (r) => this.results.show(r, this.game.role, this.tourney && this.game.role === 'solo' ? this.tourneyExtra(r.won) : undefined);
     game.onRematch = () => this.results.hide();
     $('m-hero').onclick = () => this.show('menu-hero');
     $('m-train').onclick = () => this.showTrain();
@@ -137,7 +170,7 @@ export class Menu {
   private show(id: Screen): void {
     this.current = id;
     for (const k of ['menu-main', 'menu-host', 'menu-join', 'menu-train', 'menu-hero']) $(k).hidden = k !== id;
-    $('menu').classList.toggle('sub', id === 'menu-hero' || id === 'menu-train');
+    $('menu').classList.toggle('sub', id === 'menu-hero' || id === 'menu-train' || id === 'menu-host');
     $('menu').classList.toggle('hero-bg', id === 'menu-hero');
     if (id === 'menu-hero') this.heroScreen.show();
     if (id === 'menu-main') this.heroScreen.refreshCard();
@@ -156,7 +189,14 @@ export class Menu {
   }
 
   private heroMsg(): HeroMsg {
-    return { name: this.hero.name, level: this.hero.level, attrs: { ...this.hero.attrs }, cls: this.hero.cls, items: Object.values(equippedOf(this.hero)) as Item[] };
+    return {
+      name: this.hero.name,
+      level: this.hero.level,
+      attrs: { ...this.hero.attrs },
+      cls: this.hero.cls,
+      items: Object.values(equippedOf(this.hero)) as Item[],
+      rating: { r: Math.round(this.hero.rating.r), rd: Math.round(this.hero.rating.rd) },
+    };
   }
 
   /** Aussehen des eigenen Gladiators sofort anpassen (Heldenmenü) */
@@ -169,7 +209,8 @@ export class Menu {
   /** Klassen der Trainingsgegner (pro Besuch neu gewürfelt) */
   private trainClasses: ClassId[] = AI_LEVELS.map(() => randomClass());
   private trainEq: Equipped[] = AI_LEVELS.map((l) => aiEquipment(l));
-  private trainMode: MatchMode = (localStorage.getItem('seg-mode') as MatchMode) || 'duel';
+  private trainMode: TrainMode = (localStorage.getItem('seg-mode') as TrainMode) || 'duel';
+  private tourney: Tourney | null = null;
 
   /** Eigener Held als Kämpfer im Plan */
   private heroSetup(team: number, owner: string): FighterSetup {
@@ -179,7 +220,7 @@ export class Menu {
       kit: heroKit(this.hero),
       tiers: tiersOf(eq),
       stats: heroStats(this.hero),
-      info: { name: this.hero.name, level: this.hero.level },
+      info: { name: this.hero.name, level: this.hero.level, rating: Math.round(this.hero.rating.r), rd: Math.round(this.hero.rating.rd) },
       team,
       owner,
     };
@@ -218,9 +259,13 @@ export class Menu {
         ],
       };
     }
-    const teams = assignTeams(mode, 1);
     const names = shuffle(GLADIATOR_NAMES);
     const ally = this.allyLevel(i);
+    if (mode === 'venatio') {
+      // Mit einem KI-Gefährten gegen die Bestien
+      return { mode, life: true, level: i, fighters: [this.heroSetup(0, 'local'), aiSetup(ally, 0, names[0])] };
+    }
+    const teams = assignTeams(mode, 1);
     const fighters: FighterSetup[] = [this.heroSetup(teams[0], 'local')];
     for (let k = 1; k < teams.length; k++) {
       const friend = isTeamMode(mode) && teams[k] === teams[0];
@@ -237,7 +282,11 @@ export class Menu {
   private markMode(): void {
     $('train-mode').querySelectorAll<HTMLButtonElement>('button').forEach((b) => b.classList.toggle('on', b.dataset.mode === this.trainMode));
     $('train-info').textContent =
-      this.trainMode === 'duel'
+      this.trainMode === 'tourney'
+        ? `Turnier: acht Gladiatoren, drei Duelle bis zum Sieg. Wer verliert, scheidet aus. Turniersiege bisher: ${this.hero.tourneys}`
+        : this.trainMode === 'venatio'
+          ? `Venatio: mit einem Gefährten gegen ${VENATIO_WAVES} Wellen aus Wölfen und Stieren. Beste Welle bisher: ${this.hero.venatio}. Stärke der Bestien:`
+          : this.trainMode === 'duel'
         ? 'Wähle deinen Gegner. Erfahrung gibt es nur für einen Sieg (2 Runden gewinnen).'
         : isTeamMode(this.trainMode)
           ? `${MODE_NAMES[this.trainMode]}: KI-Gefährten an deiner Seite. Sieg, wenn das gegnerische Team fällt. Stufe der Gegner:`
@@ -251,7 +300,7 @@ export class Menu {
     this.trainEq = AI_LEVELS.map((l) => aiEquipment(l));
     $('train-mode').querySelectorAll<HTMLButtonElement>('button').forEach((b) => {
       b.onclick = () => {
-        this.trainMode = b.dataset.mode as MatchMode;
+        this.trainMode = b.dataset.mode as TrainMode;
         localStorage.setItem('seg-mode', this.trainMode);
         this.showTrain();
       };
@@ -261,12 +310,27 @@ export class Menu {
     AI_LEVELS.forEach((lvl, i) => {
       const b = document.createElement('button');
       const xp = winReward(this.hero.level, lvl, 0, false, false).base;
-      const who = mode === 'duel' ? `${AI_NAMES[i]} · ${CLASSES[this.trainClasses[i]].name}` : `${AI_NAMES[i]}${isTeamMode(mode) ? 'e' : ''} · ${MODE_SIZE[mode] - (isTeamMode(mode) ? MODE_SIZE[mode] / 2 : 1)} Gegner`;
-      b.innerHTML = `${who} · Stufe ${lvl}<small>Sieg: ${xp}+ Erfahrung, ${winDenare(lvl, false)} Denare, Beute</small>`;
+      const who =
+        mode === 'tourney'
+          ? `Turnier der ${TOURNEY_NAMES[i]}`
+          : mode === 'venatio'
+            ? `Bestien: ${['zahm', 'hungrig', 'wild', 'rasend', 'Bestien des Kaisers'][i]}`
+            : mode === 'duel'
+              ? `${AI_NAMES[i]} · ${CLASSES[this.trainClasses[i]].name}`
+              : `${AI_NAMES[i]}${isTeamMode(mode) ? 'e' : ''} · ${MODE_SIZE[mode] - (isTeamMode(mode) ? MODE_SIZE[mode] / 2 : 1)} Gegner`;
+      const prize = mode === 'tourney' ? 'Turniersieg: seltene Beute oder besser, dreifache Denare' : `Sieg: ${xp}+ Erfahrung, ${winDenare(lvl, false)} Denare, Beute`;
+      b.innerHTML = `${who} · Stufe ${lvl}<small>${prize}</small>`;
       b.onclick = async () => {
         this.settings.difficulty = i;
         saveSettings(this.settings);
         await this.world.setArena(this.settings.arena);
+        if (mode === 'tourney') {
+          this.tourney = newTourney(i);
+          this.startTourneyMatch();
+          this.close('solo');
+          return;
+        }
+        this.tourney = null;
         this.applySolo(i, mode);
         const w = this.world.pick();
         this.world.apply(w.weather, w.time);
@@ -275,6 +339,80 @@ export class Menu {
       list.appendChild(b);
     });
     this.show('menu-train');
+  }
+
+  /* ---------- Turnier ---------- */
+
+  /** Duell der aktuellen Turnierrunde gegen den nächsten Gegner */
+  private startTourneyMatch(): void {
+    const t = this.tourney!;
+    const o = t.entrants[t.alive[1]];
+    const w = this.world.pick();
+    this.world.apply(w.weather, w.time, false);
+    this.game.startSolo({
+      mode: 'duel',
+      life: this.settings.life,
+      fighters: [
+        this.heroSetup(0, 'local'),
+        {
+          cls: o.cls,
+          kit: kitFor(o.cls, o.eq),
+          tiers: tiersOf(o.eq),
+          stats: applyItemStats(derive(aiAttrs(o.level)), o.eq),
+          info: { name: `${o.name} (${CLASSES[o.cls].name})`, level: o.level },
+          team: 1,
+          owner: 'ai',
+          ai: Math.min(AI_LEVELS.length - 1, t.lvl + (t.round === 2 ? 1 : 0)),
+        },
+      ],
+    });
+    this.game.hudHint(`${ROUND_NAMES[t.round]}: ${o.name} (${CLASSES[o.cls].name}, Stufe ${o.level})`);
+  }
+
+  /** Nach einem Turnierduell: weiterkommen, ausscheiden oder gewinnen */
+  private tourneyExtra(won: boolean): ResultExtra {
+    const t = this.tourney!;
+    const round = ROUND_NAMES[t.round];
+    if (!won) {
+      this.tourney = null;
+      return { apply: () => `Ausgeschieden im ${round}.`, againLabel: 'Neues Turnier', onAgain: () => this.reopenTrain() };
+    }
+    // Die anderen Paarungen dieser Runde ausfechten (stärkere Kämpfer gewinnen öfter)
+    const next: number[] = [0];
+    for (let k = 2; k < t.alive.length; k += 2) {
+      const a = t.entrants[t.alive[k]];
+      const b = t.entrants[t.alive[k + 1]];
+      next.push(Math.random() < a.level / (a.level + b.level + 0.01) + (Math.random() - 0.5) * 0.3 ? t.alive[k] : t.alive[k + 1]);
+    }
+    t.alive = next;
+    t.round++;
+    if (t.alive.length === 1) {
+      this.tourney = null;
+      return {
+        apply: (h) => {
+          h.tourneys++;
+          const lvl = AI_LEVELS[t.lvl];
+          const den = winDenare(lvl, false) * 3;
+          h.denare += den;
+          const loot = rollLoot(lvl + 6, true, Math.random, 2);
+          if (h.items.length < MAX_ITEMS) h.items.push(loot);
+          return `TURNIERSIEG! Der Lorbeerkranz gehört dir. +${den} Denare · Siegerpreis: <span style="color:${RARITY[loot.rarity].color}">${loot.name}</span>`;
+        },
+        againLabel: 'Neues Turnier',
+        onAgain: () => this.reopenTrain(),
+      };
+    }
+    const o = t.entrants[t.alive[1]];
+    return {
+      apply: () => `${round} gewonnen! Im ${ROUND_NAMES[t.round]} wartet ${o.name} (${CLASSES[o.cls].name}, Stufe ${o.level}).`,
+      againLabel: `${ROUND_NAMES[t.round]} beginnen`,
+      onAgain: () => this.startTourneyMatch(),
+    };
+  }
+
+  private reopenTrain(): void {
+    this.reopen('menu-train');
+    this.showTrain();
   }
 
   private back(): void {
@@ -337,7 +475,7 @@ export class Menu {
       const teams = assignTeams(mode, Math.min(humans.length, size));
       const box = $('host-lobby');
       box.innerHTML = '';
-      for (let i = 0; i < size; i++) {
+      for (let i = 0; i < (mode === 'venatio' ? Math.min(size, humans.length) : size); i++) {
         const el = document.createElement('span');
         const human = i < humans.length;
         el.className = human ? '' : 'ai';
@@ -390,15 +528,20 @@ export class Menu {
           kit: equal ? CLASSES[cls].kit : kitFor(cls, eq),
           tiers: tiersOf(eq),
           stats: equal ? derive(balanced(m.attrs)) : applyItemStats(derive(m.attrs), eq),
-          info: { name: String(m.name).slice(0, 18), level: m.level },
+          info: {
+            name: String(m.name).slice(0, 18),
+            level: m.level,
+            rating: Number.isFinite(m.rating?.r) ? Math.max(100, Math.min(3500, m.rating!.r)) : undefined,
+            rd: Number.isFinite(m.rating?.rd) ? Math.max(30, Math.min(350, m.rating!.rd)) : undefined,
+          },
           team,
           owner,
         };
       };
       const fighters: FighterSetup[] = [fromMsg(this.heroMsg(), teams[0], 'local')];
       chosen.forEach(([peer, g], k) => fighters.push(fromMsg(g.hero, teams[k + 1], peer)));
-      for (let k = fighters.length; k < size; k++) fighters.push(aiSetup(aiIdx, teams[k], names[k % names.length]));
-      const setup: MatchSetup = { mode, fighters, ...this.world.pick(), arena: this.settings.arena, life: this.settings.life };
+      if (mode !== 'venatio') for (let k = fighters.length; k < size; k++) fighters.push(aiSetup(aiIdx, teams[k], names[k % names.length]));
+      const setup: MatchSetup = { mode, fighters, ...this.world.pick(), arena: this.settings.arena, life: mode === 'venatio' || this.settings.life, level: aiIdx };
       const nicks: Record<string, string> = {};
       for (const [peer, g] of chosen) nicks[peer] = g.nick;
       started = true;

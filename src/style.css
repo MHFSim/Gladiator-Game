@@ -1382,3 +1382,59 @@ button:disabled {
   height: 16px;
   accent-color: #9e1b1b;
 }
+
+/* ---------- Hausrangliste ---------- */
+.rank-row {
+  display: grid;
+  grid-template-columns: 28px 1fr auto;
+  gap: 2px 8px;
+  align-items: baseline;
+  padding: 5px 8px;
+  border-bottom: 1px solid rgba(226, 182, 90, 0.18);
+  font-size: 13px;
+}
+.rank-row small {
+  grid-column: 2 / 4;
+  opacity: 0.7;
+  font-size: 11px;
+}
+.rank-row em {
+  font-style: normal;
+  color: var(--gold);
+}
+.rank-row.me {
+  background: rgba(158, 27, 27, 0.35);
+  border-radius: 8px;
+}
+
+/* Trainingsauswahl kompakter: passt auf ein Handy im Querformat */
+#menu {
+  justify-content: safe center;
+  overflow-y: auto;
+}
+#menu-train {
+  gap: 8px;
+  width: min(94vw, 760px);
+}
+#menu-train .train-list {
+  grid-template-columns: repeat(3, 1fr);
+  width: min(94vw, 760px);
+}
+#menu-train .train-list button {
+  font-size: 13px;
+  padding: 7px 9px;
+}
+#menu-train .mode-pick,
+#menu-train .arena-pick,
+#menu-train .life-opt,
+#menu-train #train-info {
+  width: min(94vw, 760px);
+}
+#menu-host {
+  gap: 7px;
+  width: min(90vw, 560px);
+}
+#menu-host #qr {
+  width: 110px !important;
+  height: 110px !important;
+}

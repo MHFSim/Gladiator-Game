@@ -105,7 +105,7 @@ export function starterItems(): Item[] {
 }
 
 /** Beute nach einem Sieg: Seltenheit hängt von der Stärke des Gegners ab */
-export function rollLoot(foeLevel: number, flawless: boolean, rnd = Math.random): Item {
+export function rollLoot(foeLevel: number, flawless: boolean, rnd = Math.random, minRarity = 0): Item {
   const slot = SLOTS[Math.floor(rnd() * SLOTS.length)];
   const luck = foeLevel / 50 + (flawless ? 0.08 : 0);
   const r = rnd();
@@ -114,7 +114,7 @@ export function rollLoot(foeLevel: number, flawless: boolean, rnd = Math.random)
   else if (r < 0.05 + luck * 0.2) rarity = 3;
   else if (r < 0.18 + luck * 0.35) rarity = 2;
   else if (r < 0.5 + luck * 0.3) rarity = 1;
-  return makeItem(slot, rarity, rnd);
+  return makeItem(slot, Math.max(rarity, minRarity), rnd);
 }
 
 export function winDenare(foeLevel: number, pvp: boolean): number {

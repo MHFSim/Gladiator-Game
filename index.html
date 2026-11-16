@@ -101,7 +101,7 @@
       </div>
       <div id="menu-train" class="menu-col" hidden>
         <div class="arena-pick" id="train-arena"><button data-arena="capua">Ludus von Capua</button><button data-arena="colosseum">Kolosseum</button></div>
-        <div class="arena-pick mode-pick" id="train-mode"><button data-mode="duel">Duell</button><button data-mode="team2">2 gegen 2</button><button data-mode="team3">3 gegen 3</button><button data-mode="melee4">Alle gegen alle 4</button><button data-mode="melee8">Alle gegen alle 8</button></div>
+        <div class="arena-pick mode-pick" id="train-mode"><button data-mode="duel">Duell</button><button data-mode="team2">2 gegen 2</button><button data-mode="team3">3 gegen 3</button><button data-mode="melee4">Alle gegen alle 4</button><button data-mode="melee8">Alle gegen alle 8</button><button data-mode="venatio">Venatio</button><button data-mode="tourney">Turnier</button></div>
         <label class="small life-opt"><input type="checkbox" id="train-life" /> Arenaleben: Fallen, Ereignisse und Tierhetze</label>
         <div id="train-info" class="small">Wähle deinen Gegner. Erfahrung gibt es nur für einen Sieg (2 Runden gewinnen).</div>
         <div id="train-list" class="train-list"></div>
@@ -129,6 +129,7 @@
             <button data-tab="class">Klasse</button>
             <button data-tab="gear">Ausrüstung</button>
             <button data-tab="smith">Schmied</button>
+            <button data-tab="rank">Rangliste</button>
           </div>
           <div id="hs-p-attrs" class="hs-panel">
             <div class="hs-head"><span id="hs-free"></span><button id="hs-respec" class="mini ghost">Neu verteilen</button></div>
@@ -147,6 +148,10 @@
             <div class="hc-small">Aufwerten bis +10. Ab +6 kann es misslingen – die Denare sind dann weg, der Gegenstand bleibt.</div>
             <div id="hs-smith" class="inv-list"></div>
           </div>
+          <div id="hs-p-rank" class="hs-panel" hidden>
+            <div id="hs-season" class="hc-small"></div>
+            <div id="hs-rank" class="inv-list"></div>
+          </div>
           <div id="hs-msg" class="hc-small"></div>
         </div>
       </div>
@@ -154,7 +159,7 @@
         <div class="menu-row">
           <canvas id="qr" width="150" height="150"></canvas>
           <div class="menu-col">
-            <div class="small">Code für deinen Gegner</div>
+            <div class="small">Code für deine Mitspieler</div>
             <div id="host-code" class="code"></div>
             <button id="m-share" class="wide">Link teilen</button>
           </div>
@@ -168,6 +173,7 @@
               <option value="team3">3 gegen 3</option>
               <option value="melee4">Alle gegen alle (4)</option>
               <option value="melee8">Alle gegen alle (8)</option>
+              <option value="venatio">Venatio – gemeinsam gegen Bestien</option>
             </select>
           </label>
           <label class="small host-mode">Werte

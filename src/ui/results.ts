@@ -1,9 +1,17 @@
 import type { MatchResult } from '../game/game';
-import { MODE_NAMES } from '../game/match';
+import { MODE_NAMES, VENATIO_WAVES } from '../game/match';
+import { glicko2, rankTitle } from '../game/rating';
 import { addXp, saveHero, winReward, xpForNext, MAX_ITEMS, POINTS_PER_LEVEL, type Hero } from '../game/hero';
 import { dismantleValue, mainText, RARITY, rollLoot, winDenare } from '../game/items';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
+
+/** Zusatz zum Ergebnis (Turnier): eigene Zeile, eigener Knopf */
+export interface ResultExtra {
+  apply(h: Hero): string;
+  againLabel: string;
+  onAgain(): void;
+}
 
 /** Ergebnis nach einem Kampf: Erfahrung nur bei Sieg */
 export class Results {
@@ -14,7 +22,7 @@ export class Results {
     private readonly actions: { again: () => void; hero: () => void; home: () => void; leave: () => void },
   ) {}
 
-  show(r: MatchResult, role: 'solo' | 'host' | 'guest'): void {
+  show(r: MatchResult, role: 'solo' | 'host' | 'guest', extra?: ResultExtra): void {
     const h = this.hero();
     const before = { level: h.level, xp: h.xp };
     const title = $('r-title');
@@ -28,20 +36,24 @@ export class Results {
         ? 'Der Kaiser schenkte dir das Leben.'
         : 'Der Kaiser verlangte deinen Tod – im Ludus flickt man dich wieder zusammen.';
     const group = r.mode !== 'duel';
-    const killText = r.kills === 1 ? '1 Gegner getötet' : `${r.kills} Gegner getötet`;
-    $('r-sub').textContent = group
-      ? `${MODE_NAMES[r.mode]} · ${r.enemies} Gegner (Ø Stufe ${r.foe.level}) · ${killText}`
-      : `${r.wins} : ${r.losses} gegen ${r.foe.name} (Stufe ${r.foe.level}) · ${fate}`;
+    const ven = r.mode === 'venatio';
+    const killText = ven ? (r.kills === 1 ? '1 Bestie erlegt' : `${r.kills} Bestien erlegt`) : r.kills === 1 ? '1 Gegner getötet' : `${r.kills} Gegner getötet`;
+    $('r-sub').textContent = ven
+      ? `Venatio · ${r.wave ?? 0} von ${VENATIO_WAVES} Wellen überstanden · ${killText}`
+      : group
+        ? `${MODE_NAMES[r.mode]} · ${r.enemies} Gegner (Ø Stufe ${r.foe.level}) · ${killText}`
+        : `${r.wins} : ${r.losses} gegen ${r.foe.name} (Stufe ${r.foe.level}) · ${fate}`;
+    if (ven) h.venatio = Math.max(h.venatio, r.wave ?? 0);
     const lines = $('r-lines');
     let gained = 0;
     let levels = 0;
     if (r.won) {
       const rw = winReward(h.level, r.foe.level, r.parries, !group && r.losses === 0, r.pvp);
       // Gruppenkampf: jede Tötung bringt zusätzlich Ruhm
-      const killXp = group ? Math.round(r.kills * rw.base * 0.25) : 0;
+      const killXp = group ? Math.round(r.kills * rw.base * (ven ? 0.08 : 0.25)) : 0;
       gained = rw.total + killXp;
       const parts = [`Sieg +${rw.base}`];
-      if (killXp) parts.push(`Tötungen ×${r.kills} +${killXp}`);
+      if (killXp) parts.push(`${ven ? 'Bestien' : 'Tötungen'} ×${r.kills} +${killXp}`);
       if (rw.parries) parts.push(`Paraden ×${Math.min(10, r.parries)} +${rw.parries}`);
       if (rw.flawless) parts.push(`Makellos ${r.wins}:0 +${rw.flawless}`);
       levels = addXp(h, gained).levelsGained;
@@ -64,6 +76,28 @@ export class Results {
       lines.innerHTML = group && r.kills > 0 ? `${killText}, doch der Sieg ging an andere. Keine Erfahrung – nur Siege bringen Ruhm.` : 'Keine Erfahrung – nur Siege bringen Ruhm.';
       h.losses++;
     }
+    // Hausrangliste: nur Duelle gegen Menschen
+    let rankLine = '';
+    if (r.pvp && r.mode === 'duel' && typeof r.foe.rating === 'number') {
+      const before = Math.round(h.rating.r);
+      h.rating = glicko2(h.rating, { r: r.foe.rating, rd: r.foe.rd ?? 200 }, r.won ? 1 : 0);
+      const after = Math.round(h.rating.r);
+      let rv = h.rivals.find((x) => x.name === r.foe.name);
+      if (!rv) {
+        rv = { name: r.foe.name, r: r.foe.rating, rd: r.foe.rd ?? 200, w: 0, l: 0, last: 0 };
+        h.rivals.push(rv);
+      }
+      rv.r = r.foe.rating;
+      rv.rd = r.foe.rd ?? rv.rd;
+      rv.last = Date.now();
+      if (r.won) rv.w++;
+      else rv.l++;
+      h.rivals = h.rivals.sort((a, b) => b.last - a.last).slice(0, 50);
+      rankLine = `<br>Hausrangliste: ${before} → <b>${after}</b> (${rankTitle(after)})`;
+    }
+    // Turnier und andere Zusätze
+    const extraLine = extra ? extra.apply(h) : '';
+    lines.innerHTML += rankLine + (extraLine ? `<br><span class="loot">${extraLine}</span>` : '');
     saveHero(h);
 
     // Balken: erst alter Stand, dann füllen
@@ -97,10 +131,11 @@ export class Results {
     again.hidden = role === 'guest';
     heroBtn.hidden = role !== 'solo';
     home.textContent = role === 'solo' ? 'Ludus' : 'Arena verlassen';
-    again.textContent = 'Nächster Kampf';
+    again.textContent = extra?.againLabel ?? 'Nächster Kampf';
     again.onclick = () => {
       this.hide();
-      this.actions.again();
+      if (extra) extra.onAgain();
+      else this.actions.again();
     };
     heroBtn.onclick = () => {
       this.hide();

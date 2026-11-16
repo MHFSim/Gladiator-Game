@@ -12,7 +12,8 @@ import { Fx } from './fx';
 import { Gore, type GoreLevel } from './gore';
 import { ArenaLife, BEAST, type EnvHitKind, type EnvHitResult } from './life';
 import type { FighterInfo } from './hero';
-import { isTeamMode, spawnPoints, TEAM_COLORS, type FighterSetup, type MatchMode, type MatchSetup } from './match';
+import { AI_LEVELS } from './hero';
+import { isTeamMode, spawnPoints, TEAM_COLORS, VENATIO_WAVES, type FighterSetup, type MatchMode, type MatchSetup } from './match';
 import { Spectacle, type Deed, type Verdict } from './spectacle';
 
 const TAU = Math.PI * 2;
@@ -66,6 +67,8 @@ export interface MatchResult {
   parries: number;
   pvp: boolean;
   verdict: Verdict;
+  /** Venatio: überstandene Wellen */
+  wave?: number;
 }
 
 export type Role = 'solo' | 'host' | 'guest';
@@ -187,6 +190,11 @@ export class Game implements FighterEvents {
       },
       kick: (v) => this.spec.kick(v),
       send: (ev) => this.send('ev', ev),
+      venatioWon: () => this.venatioEnd(true),
+      wave: (n) => {
+        this.updateScore();
+        this.send('ev', { k: 'wave', n });
+      },
     });
     this.life.setArena(arena);
     this.spec = new Spectacle(() => this.arena.crowd, sound, {
@@ -239,7 +247,10 @@ export class Game implements FighterEvents {
   /** Das aktuelle Ziel des eigenen Kämpfers (für Kamera, Anzeige) */
   get foe(): Fighter {
     const p = this.player;
-    return (p.target && p.target.mode !== 'dead' ? p.target : this.nearestEnemy(p)) ?? p.target ?? this.fighters.find((f) => f !== p) ?? p;
+    const t = p.target && p.target.mode !== 'dead' ? p.target : this.nearestEnemy(p);
+    if (t) return t;
+    if (this.mode === 'venatio') return p;
+    return p.target ?? this.fighters.find((f) => f !== p && f.team !== p.team) ?? p;
   }
 
   /** Erste KI (für Tests und Schwierigkeit) */
@@ -355,6 +366,9 @@ export class Game implements FighterEvents {
     this.mode = setup.mode;
     this.setups = setup.fighters;
     this.life.enabled = setup.life ?? true;
+    if (setup.mode === 'venatio') this.life.enabled = true;
+    this.beastLevel = setup.level ?? 1;
+    this.life.power = 1 + this.beastLevel * 0.45;
     if (this.role === 'guest' && this.life.enabled) this.life.preload();
     this.fighters = setup.fighters.map((fs, i) => {
       const g = this.gladiator(i);
@@ -389,15 +403,18 @@ export class Game implements FighterEvents {
 
   /** Für die KI: nächstes Tier und ob es gerade anstürmt */
   private threatFor(f: Fighter): { pos: Vector3; charging: boolean; dist: number } | null {
-    const b = this.life.nearest(f.pos, 8);
+    const hunt = this.mode === 'venatio' || !this.opp(f);
+    const b = this.life.nearest(f.pos, hunt ? 40 : 8);
     if (!b) return null;
     const dist = Vector3.Distance(b.pos, f.pos) - BEAST[b.kind].radius * 0.5;
     const charging = (b.mode === 'charge' || (b.mode === 'windup' && b.kind === 'bull' && !b.struck)) && b.target === f;
-    if (!charging && dist > 3) return null;
+    if (!charging && dist > 3 && !hunt) return null;
     return { pos: b.pos, charging, dist };
   }
 
   private weatherRules = { regenMul: 1, rollCostMul: 1 };
+  /** Venatio: Stufe der Tiere (0..4) */
+  private beastLevel = 1;
 
   /* ---------- Einstellungen ---------- */
 
@@ -618,6 +635,10 @@ export class Game implements FighterEvents {
       this.hud.score(w + l > 0 ? `${w} : ${l}` : '');
       return;
     }
+    if (this.mode === 'venatio') {
+      this.hud.score(this.life.wave > 0 ? `Welle ${this.life.wave} / ${VENATIO_WAVES}` : 'Venatio');
+      return;
+    }
     const alive = this.fighters.filter((f) => f.mode !== 'dead');
     if (isTeamMode(this.mode)) {
       const mine = alive.filter((f) => f.team === me.team).length;
@@ -817,6 +838,7 @@ export class Game implements FighterEvents {
       case 'round': {
         const s = e.s as number[];
         this.teamWins = s;
+        if (typeof e.wave === 'number') this.life.wave = e.wave;
         // Tötungen und Paraden zählt der Gastgeber
         (e.ks as [number, number][] | undefined)?.forEach(([k, p], i) => {
           const f = this.fighters[i];
@@ -837,6 +859,10 @@ export class Game implements FighterEvents {
       case 'dead':
         this.updateScore();
         if (e.w === this.meIdx) this.hud.hint('Du bist gefallen – schau zu, wie dein Team kämpft', 3);
+        break;
+      case 'wave':
+        this.life.wave = e.n as number;
+        this.updateScore();
         break;
       case 'trap':
         this.life.onTrap(e.i as number, e.s as 'idle');
@@ -1313,7 +1339,10 @@ export class Game implements FighterEvents {
     this.sfx('hit', big);
     this.float(p.add(new Vector3(0, 0.4, 0)), `${BEAST[b.kind].name} −${dmg}`, A, true, null, big);
     this.deed(big ? 'heavy' : 'hit', A);
-    if (this.life.damage(b, dmg, dir, big, A)) this.deed('kill', A);
+    if (this.life.damage(b, dmg, dir, big, A)) {
+      this.deed('kill', A);
+      if (this.mode === 'venatio') A.kills++;
+    }
   }
 
   bashImpact(A: Fighter): void {
@@ -1393,6 +1422,11 @@ export class Game implements FighterEvents {
   /** Gruppenkampf: vorbei, wenn nur noch ein Team steht */
   private groupKill(D: Fighter): void {
     this.updateScore();
+    if (this.mode === 'venatio') {
+      if (D === this.player && this.fighters.some((f) => f.mode !== 'dead')) this.hud.hint('Du bist gefallen – schau zu, wie die anderen kämpfen', 3);
+      if (!this.fighters.some((f) => f.mode !== 'dead')) this.venatioEnd(false);
+      return;
+    }
     if (D === this.player) this.hud.hint('Du bist gefallen – schau zu', 3);
     const alive = new Set(this.fighters.filter((f) => f.mode !== 'dead').map((f) => f.team));
     if (alive.size > 1 || this.matchOver) return;
@@ -1411,9 +1445,41 @@ export class Game implements FighterEvents {
     this.later(3.2, () => this.ceremonyDone('missio'));
   }
 
+  /** Venatio vorbei: alle Wellen geschafft oder alle gefallen */
+  private venatioEnd(won: boolean): void {
+    if (this.matchOver) return;
+    this.matchOver = true;
+    this.life.retreat();
+    this.teamWins = [won ? 1 : 0, won ? 0 : 1];
+    this.slowmo = 1.3;
+    this.spec.kick(1);
+    if (won) {
+      this.arena.crowd.wave();
+      this.sound.roar(1, 3);
+    }
+    this.hud.hint(won ? 'Alle Bestien erlegt – Victoria!' : 'Die Bestien haben gesiegt …', 3);
+    this.pendingResult = this.makeResult(won);
+    this.send('ev', { k: 'round', wt: won ? 0 : 1, s: this.teamWins, m: true, ks: this.fighters.map((f) => [f.kills, f.parries]), wave: this.life.wave });
+    this.later(3.2, () => this.ceremonyDone('missio'));
+  }
+
   /** Ergebnis aus Sicht des eigenen Kämpfers */
   private makeResult(won: boolean): Omit<MatchResult, 'verdict'> {
     const me = this.player;
+    if (this.mode === 'venatio') {
+      return {
+        won,
+        mode: this.mode,
+        wins: won ? 1 : 0,
+        losses: won ? 0 : 1,
+        foe: { name: 'Bestien', level: AI_LEVELS[Math.max(0, Math.min(AI_LEVELS.length - 1, this.beastLevel))] },
+        enemies: this.life.wave,
+        kills: me.kills,
+        parries: me.parries,
+        pvp: this.role !== 'solo',
+        wave: won ? VENATIO_WAVES : Math.max(0, this.life.wave - 1),
+      };
+    }
     const foes = this.fighters.filter((f) => f.team !== me.team);
     const lvl = foes.length ? Math.round(foes.reduce((s, f) => s + f.info.level, 0) / foes.length) : 1;
     const name = foes.length === 1 ? foes[0].info.name : this.mode === 'duel' ? (foes[0]?.info.name ?? 'Gegner') : `${foes.length} Gegner`;
@@ -1422,7 +1488,7 @@ export class Game implements FighterEvents {
       mode: this.mode,
       wins: this.teamWins[me.team] ?? 0,
       losses: Math.max(0, ...this.teamWins.filter((_, t) => t !== me.team)),
-      foe: { name, level: lvl },
+      foe: foes.length === 1 ? { ...foes[0].info, level: lvl } : { name, level: lvl },
       enemies: foes.length,
       kills: me.kills,
       parries: me.parries,
@@ -1925,7 +1991,7 @@ export class Game implements FighterEvents {
     this.updateSpecialHud();
     this.hud.favor(p.favor, foe.favor);
     this.hud.setBars(this.pct(p, 'hp'), this.pct(p, 'st'), p.exhausted);
-    const label = `${foe.info.name} · Stufe ${foe.info.level}`;
+    const label = foe === p ? '' : `${foe.info.name} · Stufe ${foe.info.level}`;
     if (label !== this.lastFoeLabel) {
       this.lastFoeLabel = label;
       this.hud.foeName(label);
@@ -1983,7 +2049,7 @@ export class Game implements FighterEvents {
     const list: Mark[] = [];
     for (const b of this.life.visible) {
       const s = this.hud.project(b.pos.add(new Vector3(0, BEAST[b.kind].height + 0.45, 0)));
-      if (s) list.push({ x: s.x, y: s.y, hp: (100 * b.hp) / BEAST[b.kind].hp, ally: false, name: BEAST[b.kind].name });
+      if (s) list.push({ x: s.x, y: s.y, hp: (100 * b.hp) / b.hpMax, ally: false, name: BEAST[b.kind].name });
     }
     for (const f of this.fighters) {
       if (this.fighters.length <= 2) break;
@@ -2228,6 +2294,11 @@ export class Game implements FighterEvents {
     this.camera.position.copyFrom(Vector3.Lerp(this.camera.position, camPos, Math.min(1, dt * 10)));
     this.camLook = Vector3.Lerp(this.camLook, look, Math.min(1, dt * 10));
     this.camera.setTarget(this.camLook);
+  }
+
+  /** Hinweis von außen (Menü, Turnier) */
+  hudHint(text: string, sec = 3): void {
+    this.hud.hint(text, sec);
   }
 
   /** Für Screenshots: feste Kameraposition */

@@ -1,3 +1,4 @@
+import { seasonOf, seasonReset, START_RATING, type Rating, type Rival } from './rating';
 /**
  * Der eigene Gladiator: Stufe, Erfahrung, Attribute. Erfahrung gibt es nur für Siege.
  * Gespeichert im Browser, exportierbar als Datei.
@@ -37,6 +38,13 @@ export interface Hero {
   wins: number;
   losses: number;
   created: number;
+  /** Hausrangliste (Glicko-2) */
+  rating: Rating;
+  season: string;
+  rivals: Rival[];
+  /** gewonnene Turniere, beste Venatio-Welle */
+  tourneys: number;
+  venatio: number;
 }
 
 export interface Stats {
@@ -128,7 +136,25 @@ export function newHero(): Hero {
   const items = starterItems();
   const equipped: Hero['equipped'] = {};
   for (const it of items) equipped[it.slot] = it.id;
-  return { v: 1, name: 'Spartacus', cls: 'murmillo', denare: 60, items, equipped, level: 1, xp: 0, attrs: zeroAttrs(), wins: 0, losses: 0, created: Date.now() };
+  return {
+    v: 1,
+    name: 'Spartacus',
+    cls: 'murmillo',
+    denare: 60,
+    items,
+    equipped,
+    level: 1,
+    xp: 0,
+    attrs: zeroAttrs(),
+    wins: 0,
+    losses: 0,
+    created: Date.now(),
+    rating: { ...START_RATING },
+    season: seasonOf(),
+    rivals: [],
+    tourneys: 0,
+    venatio: 0,
+  };
 }
 
 /** Ältere Spielstände um Klasse und Ausrüstung ergänzen, ungültige Teile entfernen */
@@ -149,6 +175,20 @@ function upgrade(h: Hero): Hero {
     if (id && ids.has(id) && out.items.find((i) => i.id === id)?.slot === s) eq[s] = id;
   }
   out.equipped = eq;
+  const rt = out.rating;
+  out.rating = rt && Number.isFinite(rt.r) && Number.isFinite(rt.rd) && Number.isFinite(rt.vol) ? { r: rt.r, rd: rt.rd, vol: rt.vol } : { ...START_RATING };
+  out.rivals = Array.isArray(out.rivals) ? out.rivals.filter((x) => x && typeof x.name === 'string' && Number.isFinite(x.r)).slice(0, 50) : [];
+  out.tourneys = Math.max(0, Math.floor(Number(out.tourneys) || 0));
+  out.venatio = Math.max(0, Math.floor(Number(out.venatio) || 0));
+  // Neue Saison: Wertung halb zur Mitte
+  const now = seasonOf();
+  if (out.season !== now) {
+    if (out.season) {
+      out.rating = seasonReset(out.rating);
+      out.rivals = out.rivals.map((x) => ({ ...x, w: 0, l: 0 }));
+    }
+    out.season = now;
+  }
   return out;
 }
 
@@ -295,4 +335,7 @@ export function balanced(a: Attrs, total = 60): Attrs {
 export interface FighterInfo {
   name: string;
   level: number;
+  /** Wertung in der Hausrangliste (nur Menschen) */
+  rating?: number;
+  rd?: number;
 }

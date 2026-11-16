@@ -4,6 +4,7 @@
 
 - **Universal Base Characters** (Standard) von [Quaternius](https://quaternius.com) – CC0 1.0
 - **Universal Animation Library** und **Universal Animation Library 2** (Standard) von [Quaternius](https://quaternius.com) – CC0 1.0
+- **Ultimate Animated Animals** (Wolf, Stier) von [Quaternius](https://quaternius.com) – CC0 1.0
 
 Die Dateien in `public/assets/` sind daraus erzeugt (verkleinert, komprimiert, nur benötigte Animationen).
 Quaternius unterstützen: https://www.patreon.com/quaternius
@@ -11,7 +12,7 @@ Quaternius unterstützen: https://www.patreon.com/quaternius
 ## Im Code erzeugt
 
 Arena, Texturen (Sand, Stein, Putz, Holz, Ziegel, Stoff, Schildbemalung), Helm, Scutum, Gladius,
-Manica, Beinschiene, Gürtel, Himmel, Licht, Feuer, Staub und Blut entstehen prozedural im Code (MIT).
+Manica, Beinschiene, Gürtel, Spießfallen, Himmel, Licht, Feuer, Staub und Blut entstehen prozedural im Code (MIT).
 
 ## Bibliotheken
 

@@ -3,7 +3,7 @@ import type { Team } from '../gladiators/gear';
 import type { Kit } from './fighter';
 import type { FighterInfo, Stats } from './hero';
 
-export type MatchMode = 'duel' | 'team2' | 'team3' | 'melee4' | 'melee8';
+export type MatchMode = 'duel' | 'team2' | 'team3' | 'melee4' | 'melee8' | 'venatio';
 
 export const MODE_NAMES: Record<MatchMode, string> = {
   duel: 'Duell',
@@ -11,10 +11,14 @@ export const MODE_NAMES: Record<MatchMode, string> = {
   team3: '3 gegen 3',
   melee4: 'Jeder gegen jeden (4)',
   melee8: 'Jeder gegen jeden (8)',
+  venatio: 'Venatio (Tierhetze)',
 };
 
 /** Anzahl der Kämpfer je Modus */
-export const MODE_SIZE: Record<MatchMode, number> = { duel: 2, team2: 4, team3: 6, melee4: 4, melee8: 8 };
+export const MODE_SIZE: Record<MatchMode, number> = { duel: 2, team2: 4, team3: 6, melee4: 4, melee8: 8, venatio: 4 };
+
+/** Wellen in der Venatio bis zum Sieg */
+export const VENATIO_WAVES = 5;
 
 export function isTeamMode(m: MatchMode): boolean {
   return m === 'team2' || m === 'team3';
@@ -45,6 +49,8 @@ export interface MatchSetup {
   arena?: 'capua' | 'colosseum';
   /** Fallen, Ereignisse und Bestien */
   life?: boolean;
+  /** Stufe der Tiere in der Venatio (0..4) */
+  level?: number;
 }
 
 /** Farben je Team (im Jeder-gegen-jeden hat jeder sein eigenes Team) */
@@ -65,6 +71,10 @@ export const TEAM_NAMES = ['Rot', 'Blau', 'Grün', 'Purpur', 'Schwarz', 'Ocker',
 export function spawnPoints(mode: MatchMode, fighters: FighterSetup[]): [number, number, number][] {
   if (mode === 'duel') {
     return fighters.map((f) => (f.team === 0 ? [0, -3.2, 0] : [0, 3.2, Math.PI]));
+  }
+  if (mode === 'venatio') {
+    const n = fighters.length;
+    return fighters.map((_, i) => [(i - (n - 1) / 2) * 1.8, -1, 0]);
   }
   if (isTeamMode(mode)) {
     const counts = [0, 0];
@@ -91,6 +101,7 @@ export function assignTeams(mode: MatchMode, humans: number): number[] {
   const teams: number[] = [];
   for (let i = 0; i < size; i++) {
     if (mode === 'duel') teams.push(i);
+    else if (mode === 'venatio') teams.push(0);
     else if (isTeamMode(mode)) teams.push(i < humans ? i % 2 : 0);
     else teams.push(i);
   }

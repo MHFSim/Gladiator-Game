@@ -151,8 +151,21 @@ export class AiController {
     this.pending = this.pending.filter((p) => p.at > now);
     for (const p of due) p.fn();
 
-    if (self.mode === 'dead' || !foe || foe.mode === 'dead') {
-      self.setBlock(false);
+    if (self.mode === 'dead') return { dir: Vector3.Zero(), speed: 0 };
+    if (!foe || foe.mode === 'dead') {
+      // Kein Gladiator mehr als Gegner (Venatio, Rundenende): Tiere jagen
+      const th = this.threat?.();
+      if (!th) {
+        self.setBlock(false);
+        return { dir: Vector3.Zero(), speed: 0 };
+      }
+      if (self.blockWanted && now >= this.releaseBlockAt) self.setBlock(false);
+      this.beasts(now);
+      if (self.blockWanted) return { dir: Vector3.Zero(), speed: 0 };
+      const d = th.pos.subtract(self.pos);
+      d.y = 0;
+      const l = d.length();
+      if (l > self.kit.reach) return { dir: d.scale(1 / Math.max(l, 1e-3)), speed: l > 5 ? 3.2 : 1.8 };
       return { dir: Vector3.Zero(), speed: 0 };
     }
     if (self.blockWanted && now >= this.releaseBlockAt) self.setBlock(false);

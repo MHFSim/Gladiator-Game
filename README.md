@@ -5,7 +5,22 @@ Gebaut mit [Babylon.js 9](https://www.babylonjs.com), läuft komplett über GitH
 
 **Spielen:** https://mhfsim.github.io/Gladiator-Game/
 
-## Stand: Phase 4 – Klassen, Ausrüstung, neuer Kampf
+## Stand: Phase 5 – Spielmodi und Arenaleben
+
+**Spielmodi (Phase 5)**
+- Duell, 2 gegen 2, 3 gegen 3, Jeder gegen jeden mit 4 oder 8 Kämpfern – im Training und im Mehrspieler.
+- Training: KI-Gefährten an deiner Seite, KI-Gegner in fünf Stufen. Im Mehrspieler füllt die KI freie Plätze.
+- Teamfarben auf Schild und Federbusch, Namen und Leben über den anderen Kämpfern, ◎ wechselt das Ziel, nach dem eigenen Tod schaut die Kamera zu.
+- Venatio: gemeinsam gegen fünf Wellen aus Wölfen und Stieren, allein mit KI-Gefährte oder mit bis zu vier Spielern.
+- Turnier: acht Gladiatoren, Viertelfinale, Halbfinale, Finale. Der Turniersieg bringt dreifache Denare und seltene Beute oder besser.
+- Hausrangliste mit Glicko-2: Duelle gegen Menschen verändern die Wertung, Rangtitel von Novicius bis Primus Palus, eigene Liste aller Gegner. Jedes Vierteljahr beginnt eine neue Saison (Wertung rückt halb zur Mitte).
+
+**Arenaleben (Phase 5, abschaltbar)**
+- Spießfallen: eiserne Gitterplatten im Sand. Wer drauftritt, löst sie aus – nach kurzem Glühen schießen Spieße heraus und bleiben blutig. Gegner auf eine Platte locken lohnt sich.
+- Der Spielleiter ruft Ereignisse aus: Wölfe werden freigelassen, ein Stier stürmt herein, alle Fallen erwachen.
+- Wölfe pirschen im Bogen heran und springen zu; Block und Parade wirken auch gegen sie. Der Stier scharrt, nimmt Anlauf und rennt alles um – ausweichen oder er bricht die Deckung. Prallt er gegen die Mauer, ist er benommen und verwundbar.
+- Die KI weicht Fallen und dem Stier aus und wehrt sich gegen Tiere. Tiermodelle: Quaternius „Ultimate Animated Animals“ (CC0).
+
 
 **Arena und Grafik (Phase 0)**
 - Ludus von Capua, komplett im Code erzeugt: bemalte Podiumsmauer, zwei Tore mit Fallgitter, Sitzstufen,
@@ -34,7 +49,8 @@ Gebaut mit [Babylon.js 9](https://www.babylonjs.com), läuft komplett über GitH
 - Gastgeber bekommt einen 6-stelligen Code, QR-Code und einen Link zum Teilen.
 - Verbindung direkt zwischen den Handys (WebRTC über Trystero), kein eigener Server.
 - Das Handy des Gastgebers entscheidet über alle Treffer, Paraden und Blocks; der Gast sieht dasselbe mit kurzer Verzögerung.
-- Verlässt der Gast die Arena, kämpft der Gastgeber gegen die KI weiter.
+- Lobby für bis zu acht Spieler: Der Gastgeber wählt Modus, Arena und Werte und startet, wenn alle da sind.
+- Verlässt ein Gast die Arena, übernimmt die KI seinen Kämpfer.
 - Test ohne Internet: zwei Tabs mit `?net=local` (siehe `tools/net-test.mjs`).
 
 **Dein Gladiator (Ludus)**
@@ -82,7 +98,7 @@ Gebaut mit [Babylon.js 9](https://www.babylonjs.com), läuft komplett über GitH
 | Ausweichen | Rechts wischen (in Wischrichtung) | „Rolle“ (Richtung mit dem Stick) |
 | Sonderfähigkeit | Klassentaste neben „Block“ | Klassentaste |
 | Publikum anheizen | ✊ oben links | ✊ oben links |
-| Aufschalten an/aus | ◎ oben rechts | ◎ oben rechts |
+| Aufschalten an/aus, Ziel wechseln | ◎ oben rechts | ◎ oben rechts |
 
 ## Entwickeln
 
@@ -101,6 +117,7 @@ Die Original-Pakete von Quaternius (CC0) sind zu groß fürs Repo. Zum Neubauen 
 
 ```bash
 npm run assets -- <Ordner mit den entpackten Paketen>
+node tools/build-animals.mjs <Ordner von „Ultimate Animated Animals“>   # Wolf und Stier
 ```
 
 ## Aufbau
@@ -119,4 +136,4 @@ tools/                  Asset-Pipeline und Screenshot-Werkzeug
 
 ## Lizenz
 
-Code: MIT (siehe `LICENSE`). Figuren und Animationen: CC0 von Quaternius (siehe `CREDITS.md`).
+Code: MIT (siehe `LICENSE`). Figuren, Tiere und Animationen: CC0 von Quaternius (siehe `CREDITS.md`).

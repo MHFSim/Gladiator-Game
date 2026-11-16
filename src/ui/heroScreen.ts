@@ -1,3 +1,4 @@
+import { rankTitle } from '../game/rating';
 import {
   ATTR_INFO,
   ATTRS,
@@ -40,7 +41,7 @@ export class HeroScreen {
   private pending: Attrs = zeroAttrs();
   private rows = new Map<AttrKey, { val: HTMLElement; desc: HTMLElement; minus: HTMLButtonElement; plus: HTMLButtonElement }>();
 
-  private tab: 'attrs' | 'class' | 'gear' | 'smith' = 'attrs';
+  private tab: 'attrs' | 'class' | 'gear' | 'smith' | 'rank' = 'attrs';
   private selSlot: Slot = 'weapon';
 
   constructor(
@@ -155,7 +156,7 @@ export class HeroScreen {
   private setTab(t: HeroScreen['tab']): void {
     this.tab = t;
     document.querySelectorAll<HTMLButtonElement>('.hs-tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === t));
-    for (const k of ['attrs', 'class', 'gear', 'smith']) $('hs-p-' + k).hidden = k !== t;
+    for (const k of ['attrs', 'class', 'gear', 'smith', 'rank']) $('hs-p-' + k).hidden = k !== t;
     this.msg('');
     this.render();
   }
@@ -286,19 +287,37 @@ export class HeroScreen {
     const need = xpForNext(h.level);
     $('hs-xp').style.width = `${Math.min(100, (100 * h.xp) / need)}%`;
     $('hs-xp-text').textContent = h.level >= MAX_LEVEL ? 'Höchste Stufe erreicht' : `${h.xp} / ${need} Erfahrung bis Stufe ${h.level + 1}`;
-    $('hs-record').textContent = `${CLASSES[h.cls].name} · Siege ${h.wins} · Niederlagen ${h.losses}`;
+    $('hs-record').textContent = `${CLASSES[h.cls].name} · Siege ${h.wins} · Niederlagen ${h.losses} · Wertung ${Math.round(h.rating.r)}`;
     $('hs-denare').textContent = `${h.denare} Denare`;
     if (this.tab === 'class') this.renderClasses();
     if (this.tab === 'gear') this.renderGear();
     if (this.tab === 'smith') this.renderSmith();
+    if (this.tab === 'rank') this.renderRank();
     this.refreshCard();
+  }
+
+  /** Hausrangliste: eigener Held und alle Gegner aus Mehrspieler-Duellen */
+  private renderRank(): void {
+    const h = this.hero;
+    const rows = [{ name: h.name + ' (du)', r: h.rating.r, rd: h.rating.rd, w: -1, l: -1, me: true }, ...h.rivals.map((x) => ({ ...x, me: false }))].sort((a, b) => b.r - a.r);
+    const box = $('hs-rank');
+    box.innerHTML = '';
+    rows.forEach((x, i) => {
+      const el = document.createElement('div');
+      el.className = 'rank-row' + (x.me ? ' me' : '');
+      const rec = x.me ? `${h.tourneys} Turniersiege · Venatio bis Welle ${h.venatio}` : `gegen dich ${x.w}:${x.l}`;
+      el.innerHTML = `<b>${i + 1}.</b><span></span><em>${Math.round(x.r)} ±${Math.round(x.rd)}</em><small>${rankTitle(x.r)} · ${rec}</small>`;
+      (el.querySelector('span') as HTMLElement).textContent = x.name;
+      box.appendChild(el);
+    });
+    $('hs-season').textContent = `Saison ${h.season} · Nur Duelle gegen Menschen zählen. Neue Saison: Wertung rückt zur Mitte.`;
   }
 
   /** Karte im Hauptmenü */
   refreshCard(): void {
     const h = this.hero;
     $('hc-name').textContent = h.name;
-    $('hc-level').textContent = `${CLASSES[h.cls].name} · Stufe ${h.level}`;
+    $('hc-level').textContent = `${CLASSES[h.cls].name} · Stufe ${h.level} · ${rankTitle(h.rating.r)} ${Math.round(h.rating.r)}`;
     const need = xpForNext(h.level);
     $('hc-xp').style.width = `${Math.min(100, (100 * h.xp) / need)}%`;
     $('hc-xp-text').textContent = `${h.xp} / ${need} Erfahrung`;

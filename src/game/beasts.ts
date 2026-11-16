@@ -68,6 +68,9 @@ export class Beast {
   private groups = new Map<string, AnimationGroup>();
   private cur = '';
   hp: number;
+  hpMax: number;
+  /** Stärke (Venatio-Stufe): Schaden mal diesem Wert */
+  dmgMul = 1;
   mode: BeastMode = 'enter';
   modeUntil = 0;
   target: Fighter | null = null;
@@ -94,6 +97,7 @@ export class Beast {
     this.id = id ?? nextId++;
     if (id !== undefined) nextId = Math.max(nextId, id + 1);
     this.hp = BEAST[kind].hp;
+    this.hpMax = this.hp;
     this.holder = new TransformNode(`beast-${kind}-${this.id}`, scene);
     const inst = container.instantiateModelsToScene((n) => `${n}-${this.id}`, false, { doNotInstantiate: true });
     for (const r of inst.rootNodes) r.parent = this.holder;
