@@ -499,3 +499,30 @@ button.wide {
   font-size: 16px;
   margin-top: 6px;
 }
+
+#version {
+  position: absolute;
+  bottom: calc(8px + var(--safe-b));
+  right: calc(12px + var(--safe-r));
+  font-size: 11px;
+  opacity: 0.5;
+}
+#error-box {
+  max-width: 86vw;
+  max-height: 34vh;
+  overflow: auto;
+  white-space: pre-wrap;
+  font: 11px/1.35 ui-monospace, monospace;
+  color: #ffb4a8;
+  background: rgba(0, 0, 0, 0.6);
+  border: 1px solid rgba(255, 120, 100, 0.5);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin: 0;
+  text-align: left;
+  user-select: text;
+  -webkit-user-select: text;
+}
+#error-box[hidden] {
+  display: none;
+}

@@ -1,9 +1,9 @@
 import './style.css';
-import { FreeCamera, Matrix, Scene, Vector3 } from '@babylonjs/core';
+import { FreeCamera, Logger, Matrix, Scene, Vector3 } from '@babylonjs/core';
 import { buildCapua } from './arena/capua';
 import { createEngine } from './core/engine';
 import { DynamicResolution, guessTier, PROFILES, TIER_ORDER } from './core/quality';
-import { loadSettings } from './core/settings';
+import { loadSettings, saveSettings } from './core/settings';
 import { Game } from './game/game';
 import { Gladiator, GladiatorAssets } from './gladiators/gladiator';
 import { bindButtons, TouchInput } from './input/touch';
@@ -11,10 +11,58 @@ import { createEnvironment } from './render/environment';
 import { Hud } from './ui/hud';
 
 const params = new URLSearchParams(location.search);
+const VERSION = __APP_VERSION__;
 
+/* ---------- Ladeanzeige und Fehlerprotokoll (sichtbar auf dem Handy) ---------- */
+let currentStep = '';
+const errors: string[] = [];
 function progress(p: number, label: string): void {
+  currentStep = label;
   (document.getElementById('loading-bar') as HTMLElement).style.width = `${Math.round(p * 100)}%`;
   (document.getElementById('loading-text') as HTMLElement).textContent = label;
+}
+function reportError(msg: string): void {
+  errors.push(msg);
+  const box = document.getElementById('error-box') as HTMLElement;
+  box.hidden = false;
+  box.textContent = `Version ${VERSION} · Schritt: ${currentStep}\n` + errors.slice(-6).join('\n');
+}
+window.addEventListener('error', (e) => reportError('Fehler: ' + (e.message || String(e.error))));
+window.addEventListener('unhandledrejection', (e) => reportError('Fehler: ' + String((e.reason && e.reason.message) || e.reason)));
+Logger.OnNewCacheEntry = (entry: string) => {
+  if (entry.includes('Error')) reportError(entry.replace(/<[^>]+>/g, '').slice(0, 300));
+};
+(document.getElementById('version') as HTMLElement).textContent = `v${VERSION}`;
+// Ausweg, falls es hängt: niedrige Grafik und WebGL2 erzwingen
+window.setTimeout(() => {
+  const loading = document.getElementById('loading') as HTMLElement;
+  if (loading.style.display === 'none') return;
+  const b = document.getElementById('btn-safe') as HTMLButtonElement;
+  b.hidden = false;
+  b.onclick = () => {
+    const s = loadSettings();
+    s.quality = 'low';
+    s.renderer = 'webgl2';
+    saveSettings(s);
+    location.reload();
+  };
+}, 20000);
+// Wächter: hängt das Laden, zeigen wir an, wo
+window.setTimeout(() => {
+  const loading = document.getElementById('loading') as HTMLElement;
+  if (loading.style.display !== 'none') reportError(`Laden dauert ungewöhnlich lange (über 45 s). Bitte Screenshot schicken.`);
+}, 45000);
+
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T | null> {
+  return Promise.race([
+    p,
+    new Promise<null>((resolve) =>
+      window.setTimeout(() => {
+        reportError(`Zeitüberschreitung: ${label} – fahre trotzdem fort`);
+        resolve(null);
+      }, ms),
+    ),
+  ]);
 }
 
 async function boot(): Promise<void> {
@@ -86,7 +134,8 @@ async function boot(): Promise<void> {
   const g = game;
 
   progress(0.95, 'Die Tore öffnen sich …');
-  await scene.whenReadyAsync();
+  // Nicht ewig auf Shader warten: nach 12 s trotzdem starten (fehlende Shader werden nachgeladen)
+  await withTimeout(scene.whenReadyAsync(), 12000, 'Shader vorbereiten');
 
   // Bildrate stabil halten
   const target = () => (settings.battery ? 30 : 60);

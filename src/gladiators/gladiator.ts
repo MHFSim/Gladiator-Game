@@ -35,12 +35,28 @@ export class GladiatorAssets {
 
   static async load(scene: Scene, progress: (p: number, label: string) => void): Promise<GladiatorAssets> {
     MeshoptCompression.Configuration = { decoder: { url: `${BASE}vendor/meshopt_decoder.js` } };
-    progress(0.35, 'Lade Gladiator …');
-    const character = await LoadAssetContainerAsync(`${BASE}assets/gladiator.glb`, scene);
-    progress(0.5, 'Lade Bewegungen …');
-    const a1 = await LoadAssetContainerAsync(`${BASE}assets/anims1.glb`, scene);
-    progress(0.65, 'Lade Kampfbewegungen …');
-    const a2 = await LoadAssetContainerAsync(`${BASE}assets/anims2.glb`, scene);
+    // Alle drei Dateien gleichzeitig laden und Fortschritt in MB anzeigen
+    const files = ['gladiator.glb', 'anims1.glb', 'anims2.glb'];
+    const loaded = [0, 0, 0];
+    const totals = [0.5e6, 3e6, 3.1e6];
+    const show = () => {
+      const l = loaded.reduce((a, b) => a + b, 0);
+      const t = totals.reduce((a, b) => a + b, 0);
+      progress(0.3 + 0.45 * Math.min(1, l / t), `Lade Gladiator und Bewegungen … ${(l / 1e6).toFixed(1)} / ${(t / 1e6).toFixed(1)} MB`);
+    };
+    show();
+    const [character, a1, a2] = await Promise.all(
+      files.map((f, i) =>
+        LoadAssetContainerAsync(`${BASE}assets/${f}`, scene, {
+          onProgress: (ev) => {
+            loaded[i] = ev.loaded;
+            if (ev.lengthComputable && ev.total > 0) totals[i] = ev.total;
+            show();
+          },
+        }),
+      ),
+    );
+    progress(0.78, 'Bereite Figuren vor …');
     const anims = [...a1.animationGroups, ...a2.animationGroups];
     for (const g of anims) g.stop();
     return new GladiatorAssets(character, anims);
