@@ -48,6 +48,11 @@ Gebaut mit [Babylon.js 9](https://www.babylonjs.com), läuft komplett über GitH
 - Kampfende: Zeitlupe, der Verlierer sinkt auf die Knie, das Volk stimmt ab, der Kaiser zeigt den Daumen. Missio = Gnade, Iugula = Todesstoß.
 - Ton ohne Audiodateien (Web Audio): Menge, Jubel, Buhrufe, Metall, Schild, Treffer, Fanfare. Abschaltbar in den Einstellungen.
 
+**Wetter (Phase 3)**
+- Klar und heiß, Bewölkt, Regen, Gewitter, Nebel – zufällig oder fest in den Einstellungen; im Mehrspieler bestimmt der Gastgeber.
+- Wolkenschicht, weiche Schatten bei Bewölkung, Regenstreifen und Spritzer, nasser dunkler Sand, Pfützen, glänzende Rüstung, Blitze mit Donner, Bodennebel.
+- Wirkung: Hitze bremst die Ausdauer-Erholung (−10 %), nasser Sand macht Ausweichen teurer (+25 %), Nebel verkürzt das Aufschalten.
+
 ## Steuerung
 
 | Aktion | Schema A: Gesten | Schema B: Tasten |

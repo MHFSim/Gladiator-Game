@@ -11,6 +11,7 @@ import { createEnvironment } from './render/environment';
 import { Hud } from './ui/hud';
 import { loadHero } from './game/hero';
 import { Sound } from './audio/sound';
+import { randomWeather, Weather, WEATHER_NAMES, type WeatherKind } from './render/weather';
 import { Menu } from './ui/menu';
 
 const params = new URLSearchParams(location.search);
@@ -124,8 +125,31 @@ async function boot(): Promise<void> {
     return { x: p.x, y: p.y };
   };
   const sound = new Sound(settings.sound);
+  const weather = new Weather(scene, env, camera, profile, sound);
+  const RULE_TEXT: Record<WeatherKind, string> = {
+    clear: 'Hitze: Ausdauer erholt sich langsamer',
+    cloudy: 'Angenehmes Kampfwetter',
+    rain: 'Nasser Sand: Ausweichen kostet mehr Ausdauer',
+    storm: 'Nasser Sand: Ausweichen kostet mehr Ausdauer',
+    fog: 'Nebel: Aufschalten erst aus kurzer Nähe',
+  };
+  const world = {
+    pick(): { weather: WeatherKind; time: number } {
+      const forced = params.get('weather') as WeatherKind | null;
+      return { weather: forced ?? (settings.weather === 'random' ? randomWeather() : settings.weather), time: settings.timeOfDay };
+    },
+    apply(w: WeatherKind, time: number, announce = true): void {
+      env.setTime(time);
+      weather.set(w);
+      game?.setWeatherRules(weather.rules);
+      if (announce) window.setTimeout(() => hud.hint(`${WEATHER_NAMES[w]} – ${RULE_TEXT[w]}`, 3.5), 600);
+    },
+  };
   const hud = new Hud(settings, {
     onSound: (on) => sound.setEnabled(on),
+    onWeather: (w) => {
+      if (game && game.role === 'solo') world.apply(w === 'random' ? randomWeather() : w, env.hours);
+    },
     onAssist: (m) => {
       if (game) game.blockAssist = m;
     },
@@ -140,9 +164,10 @@ async function boot(): Promise<void> {
   game = new Game(scene, camera, arena, player, dummy, input, hud, settings.difficulty, sound);
   const g = game;
   g.blockAssist = settings.blockAssist;
+  world.apply(world.pick().weather, settings.timeOfDay, false);
   const hero = loadHero();
   let hinted = false;
-  const menu = new Menu(g, hero, settings, (mode) => {
+  const menu = new Menu(g, hero, settings, world, (mode) => {
     if (mode === 'solo' && !hinted) hud.showControlsHint();
     hinted = true;
   }, params.get('net') === 'local' ? 'local' : 'webrtc');
@@ -178,6 +203,7 @@ async function boot(): Promise<void> {
     const frameDt = settings.battery ? acc : dt;
     acc = 0;
     if (!paused) g.update(frameDt, env.daylight, params.has('freeze') || menu.open);
+    weather.update(frameDt);
     if (menu.open && !view) {
       orbit += frameDt * 0.08;
       g.debugCamera(new Vector3(Math.sin(orbit) * 11, 4.2, Math.cos(orbit) * 11), new Vector3(0, 1.4, 0));

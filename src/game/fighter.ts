@@ -69,6 +69,8 @@ export class Fighter {
   info: FighterInfo = { name: 'Gladiator', level: 1 };
   parries = 0;
   favor = 50;
+  /** Wetter: Erholung und Kosten fürs Ausweichen */
+  weather = { regenMul: 1, rollCostMul: 1 };
   damageTaken = 0;
 
   constructor(
@@ -109,7 +111,7 @@ export class Fighter {
     // Ausdauer
     if (this.staminaDelay > 0) this.staminaDelay -= dt;
     else if (this.mode !== 'dead') {
-      const rate = this.exhausted ? this.stats.staminaRegen * 1.3 : this.stats.staminaRegen;
+      const rate = (this.exhausted ? this.stats.staminaRegen * 1.3 : this.stats.staminaRegen) * this.weather.regenMul;
       this.g.stamina = Math.min(this.stats.staminaMax, this.g.stamina + rate * dt);
     }
   }
@@ -254,7 +256,7 @@ export class Fighter {
     }
     if (this.attack) this.g.animator.cancel(this.attack.actionId, 0.08);
     this.attack = null;
-    this.spend(COMBAT.roll.stamina);
+    this.spend(COMBAT.roll.stamina * this.weather.rollCostMul);
     const speed = COMBAT.roll.speed * this.stats.rollMul;
     const dur = this.g.animator.durationOf('roll', speed);
     this.mode = 'roll';

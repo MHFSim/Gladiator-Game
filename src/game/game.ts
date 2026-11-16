@@ -51,6 +51,8 @@ export interface NetSetup {
   /** 0 = Gastgeber, 1 = Gast */
   stats: [Stats, Stats];
   info: [FighterInfo, FighterInfo];
+  weather?: string;
+  time?: number;
 }
 
 export type Role = 'solo' | 'host' | 'guest';
@@ -160,6 +162,13 @@ export class Game implements FighterEvents {
   }
 
   readonly spec: Spectacle;
+  private lockRange = COMBAT.lockRange;
+
+  /** Wetterregeln für beide Kämpfer */
+  setWeatherRules(r: { regenMul: number; rollCostMul: number; lockRange: number }): void {
+    this.lockRange = r.lockRange;
+    for (const f of [this.player, this.foe]) f.weather = { regenMul: r.regenMul, rollCostMul: r.rollCostMul };
+  }
   private slowmo = 0;
   private pendingResult: Omit<MatchResult, 'verdict'> | null = null;
 
@@ -563,7 +572,7 @@ export class Game implements FighterEvents {
       this.scene.animationTimeScale = this.hitStop > 0 ? 0.06 : 1;
     }
     const dist = Vector3.Distance(this.player.pos, this.foe.pos);
-    if (!this.locked && !this.manualUnlock && dist < COMBAT.lockRange) {
+    if (!this.locked && !this.manualUnlock && dist < this.lockRange) {
       this.locked = true;
       this.hud.setLocked(true);
     }
@@ -964,11 +973,11 @@ export class Game implements FighterEvents {
 
     // Automatisch aufschalten, wenn der Gegner nah ist
     const dist = Vector3.Distance(this.player.pos, this.foe.pos);
-    if (!this.locked && !this.manualUnlock && dist < COMBAT.lockRange && this.foe.mode !== 'dead') {
+    if (!this.locked && !this.manualUnlock && dist < this.lockRange && this.foe.mode !== 'dead') {
       this.locked = true;
       this.hud.setLocked(true);
     }
-    if (this.manualUnlock && dist > COMBAT.lockRange + 4) this.manualUnlock = false;
+    if (this.manualUnlock && dist > this.lockRange + 4) this.manualUnlock = false;
     this.input.locked = this.locked;
 
     const ceremony = this.spec.inCeremony;

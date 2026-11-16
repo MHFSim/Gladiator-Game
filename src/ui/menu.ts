@@ -7,9 +7,14 @@ import type { Settings } from '../core/settings';
 import { saveSettings } from '../core/settings';
 import { HeroScreen } from './heroScreen';
 import { Results } from './results';
+import type { WeatherKind } from '../render/weather';
 
 const PROTOCOL = 2;
 type Screen = 'menu-main' | 'menu-host' | 'menu-join' | 'menu-train' | 'menu-hero';
+export interface World {
+  pick(): { weather: WeatherKind; time: number };
+  apply(w: WeatherKind, time: number, announce?: boolean): void;
+}
 interface HeroMsg {
   name: string;
   level: number;
@@ -30,6 +35,7 @@ export class Menu {
     private readonly game: Game,
     private readonly hero: Hero,
     private readonly settings: Settings,
+    private readonly world: World,
     private readonly onStart: (mode: 'solo' | 'host' | 'guest') => void,
     private readonly netKind: 'webrtc' | 'local',
   ) {
@@ -102,6 +108,8 @@ export class Menu {
         this.settings.difficulty = i;
         saveSettings(this.settings);
         this.applySolo(i);
+        const w = this.world.pick();
+        this.world.apply(w.weather, w.time);
         this.game.rematch();
         this.close('solo');
       };
@@ -178,10 +186,12 @@ export class Menu {
           { name: me.name, level: me.level },
           { name: String(guest.name).slice(0, 18), level: guest.level },
         ],
+        ...((): { weather: WeatherKind; time: number } => this.world.pick())(),
       };
       $('host-status').textContent = `${setup.info[1].name} (Stufe ${guest.level}) ist da!`;
       this.countdown('host-status', () => {
         t.send('start', { v: PROTOCOL, setup });
+        this.world.apply(setup.weather as WeatherKind, setup.time ?? 14);
         this.game.startNet('host', t, setup);
         this.close('host');
       });
@@ -228,7 +238,9 @@ export class Menu {
       if (started) return;
       started = true;
       window.clearTimeout(timeout);
-      this.game.startNet('guest', t, (d as { setup: NetSetup }).setup);
+      const setup = (d as { setup: NetSetup }).setup;
+      if (setup.weather) this.world.apply(setup.weather as WeatherKind, setup.time ?? 14);
+      this.game.startNet('guest', t, setup);
       this.close('guest');
     });
     t.onPeerLeave(() => {

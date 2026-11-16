@@ -20,6 +20,7 @@ export class Hud {
       onPause: (paused: boolean) => void;
       onAssist: (m: Settings['blockAssist']) => void;
       onSound: (on: boolean) => void;
+      onWeather: (w: Settings['weather']) => void;
       project: (world: Vector3) => { x: number; y: number } | null;
       rendererLabel: string;
       tierLabel: string;
@@ -89,6 +90,13 @@ export class Hud {
       hooks.onTime(settings.timeOfDay);
     });
     time.addEventListener('change', () => saveSettings(settings));
+    const wsel = $<HTMLSelectElement>('set-weather');
+    wsel.value = settings.weather;
+    wsel.addEventListener('change', () => {
+      settings.weather = wsel.value as Settings['weather'];
+      saveSettings(settings);
+      hooks.onWeather(settings.weather);
+    });
     const snd = $<HTMLInputElement>('set-sound');
     snd.checked = settings.sound;
     snd.addEventListener('change', () => {

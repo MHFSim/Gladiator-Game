@@ -116,6 +116,7 @@ export class Sound {
     this.booGain = ctx.createGain();
     this.booGain.gain.value = 0;
     mix.connect(this.booGain).connect(this.master);
+    if (this.rainLevel > 0) this.rain(this.rainLevel);
   }
 
   private loop(rate = 1): AudioBufferSourceNode {
@@ -264,6 +265,37 @@ export class Sound {
     if (!this.ctx || !this.enabled) return;
     this.burst(260, 0.7, 0.35, 0.9, 'lowpass');
     this.tone(60, 0.3, 0.6, 'sine', 0.7);
+  }
+
+  private rainGain: GainNode | null = null;
+  private rainLevel = 0;
+
+  /** Regenrauschen 0..1 */
+  rain(level: number): void {
+    this.rainLevel = level;
+    if (!this.ctx) return;
+    if (!this.rainGain && level > 0) {
+      const src = this.loop(1.7);
+      const hp = this.ctx.createBiquadFilter();
+      hp.type = 'highpass';
+      hp.frequency.value = 900;
+      const lp = this.ctx.createBiquadFilter();
+      lp.type = 'lowpass';
+      lp.frequency.value = 7000;
+      this.rainGain = this.ctx.createGain();
+      this.rainGain.gain.value = 0;
+      src.connect(hp).connect(lp).connect(this.rainGain).connect(this.master);
+    }
+    this.rainGain?.gain.setTargetAtTime(level * 0.35, this.ctx.currentTime, 0.8);
+  }
+
+  /** Donner, Stärke 0..1 */
+  thunder(strength: number): void {
+    if (!this.ctx || !this.enabled) return;
+    const s = Math.max(0.3, strength);
+    this.burst(2500, 0.5, 0.12, 0.5 * s, 'highpass');
+    this.burst(110, 0.8, 2.8, 1.6 * s, 'lowpass', 0.05);
+    this.burst(60, 0.6, 3.6, 1.2 * s, 'lowpass', 0.3);
   }
 
   /** Fanfare (Tuba) für Kampfbeginn und Urteil */

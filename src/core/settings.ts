@@ -9,6 +9,7 @@ export interface Settings {
   timeOfDay: number; // Stunden, 6.0 – 20.5
   battery: boolean;
   sound: boolean;
+  weather: 'random' | 'clear' | 'cloudy' | 'rain' | 'storm' | 'fog';
   showFps: boolean;
   installHintSeen: boolean;
   difficulty: number; // 0..4
@@ -24,6 +25,7 @@ const DEFAULTS: Settings = {
   timeOfDay: 16.5,
   battery: false,
   sound: true,
+  weather: 'random',
   showFps: false,
   installHintSeen: false,
   difficulty: 1,
