@@ -63,6 +63,13 @@ Gebaut mit [Babylon.js 9](https://www.babylonjs.com), läuft komplett über GitH
 - Bis zu 9.000 Zuschauer (je nach Grafikstufe).
 - Auswahl im Training und beim Eröffnen einer Arena; der Gast wechselt automatisch in die Arena des Gastgebers. Der Wechsel geht ohne Neuladen.
 
+**Brutalität (Regler in den Einstellungen: Voll / Reduziert / Aus)**
+- Treffer: Blutfontäne, gestreckte Spritzer, Blutnebel, viele Flecken im Sand in Schlagrichtung, glänzende Wunden am Körper, die Waffe wird mit jedem Treffer blutiger.
+- Wenig Leben: der Kämpfer blutet, Tropfen und Flecken unter ihm.
+- Tödliche Treffer (besonders Wuchtschläge und Kombo-Abschlüsse): Kopf, Arme oder Unterschenkel werden abgetrennt und fliegen mit Physik durch die Arena, samt Helm, Waffe oder Schild. Aus dem Stumpf pulsiert eine Fontäne im Herzschlag, darunter wächst eine Lache.
+- „Iugula!“: Der Todesstoß trennt immer den Kopf ab.
+- Blut auf der Kamera, wenn es nah spritzt.
+
 ## Steuerung
 
 | Aktion | Schema A: Gesten | Schema B: Tasten |

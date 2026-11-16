@@ -21,6 +21,7 @@ export class Hud {
       onAssist: (m: Settings['blockAssist']) => void;
       onSound: (on: boolean) => void;
       onWeather: (w: Settings['weather']) => void;
+      onGore: (g: Settings['gore']) => void;
       project: (world: Vector3) => { x: number; y: number } | null;
       rendererLabel: string;
       tierLabel: string;
@@ -91,6 +92,13 @@ export class Hud {
       hooks.onTime(settings.timeOfDay);
     });
     time.addEventListener('change', () => saveSettings(settings));
+    const gsel = $<HTMLSelectElement>('set-gore');
+    gsel.value = settings.gore;
+    gsel.addEventListener('change', () => {
+      settings.gore = gsel.value as Settings['gore'];
+      saveSettings(settings);
+      hooks.onGore(settings.gore);
+    });
     const wsel = $<HTMLSelectElement>('set-weather');
     wsel.value = settings.weather;
     wsel.addEventListener('change', () => {
@@ -215,6 +223,32 @@ export class Hud {
     b.style.setProperty('--cd', `${Math.round((1 - left / total) * 100)}%`);
   }
 
+  private splats: string[] = [];
+
+  /** Blutspritzer auf der Kamera (laufen langsam herunter) */
+  screenBlood(amount: number): void {
+    if (amount <= 0.05) return;
+    if (!this.splats.length) this.splats = makeSplats();
+    const box = $('screen-blood');
+    const n = 1 + Math.round(amount * 2.5);
+    for (let i = 0; i < n; i++) {
+      const el = document.createElement('div');
+      el.className = 'splat';
+      const size = 110 + Math.random() * 230 * amount;
+      const edge = Math.random();
+      const x = edge < 0.5 ? (Math.random() < 0.5 ? -0.1 : 0.75) * window.innerWidth + Math.random() * 120 : Math.random() * window.innerWidth;
+      const y = edge >= 0.5 ? (Math.random() < 0.5 ? -0.1 : 0.6) * window.innerHeight + Math.random() * 80 : Math.random() * window.innerHeight * 0.8;
+      el.style.left = `${x}px`;
+      el.style.top = `${y}px`;
+      el.style.width = el.style.height = `${size}px`;
+      el.style.backgroundImage = `url(${this.splats[Math.floor(Math.random() * this.splats.length)]})`;
+      el.style.opacity = String(Math.min(0.92, 0.45 + amount * 0.5));
+      el.style.transform = `rotate(${Math.random() * 360}deg)`;
+      box.appendChild(el);
+      window.setTimeout(() => el.remove(), 3200);
+    }
+  }
+
   /** Bildschirm-Blitz und Vibration */
   flash(kind: 'hurt' | 'parry' | 'strike'): void {
     const el = $('hurt-flash');
@@ -301,4 +335,43 @@ export class Hud {
     if (this.hintTimer !== null) window.clearTimeout(this.hintTimer);
     this.hintTimer = window.setTimeout(() => this.hintEl.classList.remove('show'), seconds * 1000);
   }
+}
+
+/** Blutspritzer-Bilder für die Kamera (einmal erzeugt) */
+function makeSplats(): string[] {
+  const out: string[] = [];
+  for (let k = 0; k < 4; k++) {
+    const S = 256;
+    const c = document.createElement('canvas');
+    c.width = c.height = S;
+    const ctx = c.getContext('2d')!;
+    const blob = (x: number, y: number, r: number, a: number) => {
+      const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+      g.addColorStop(0, `rgba(95,0,0,${a})`);
+      g.addColorStop(0.7, `rgba(120,4,4,${a * 0.9})`);
+      g.addColorStop(1, 'rgba(120,4,4,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fill();
+    };
+    blob(S / 2, S / 2, S * (0.16 + Math.random() * 0.08), 0.95);
+    const dir = Math.random() * Math.PI * 2;
+    for (let i = 0; i < 26; i++) {
+      const ang = dir + (Math.random() - 0.5) * 2.2;
+      const d = S * (0.08 + Math.random() * 0.36);
+      blob(S / 2 + Math.cos(ang) * d, S / 2 + Math.sin(ang) * d, S * (0.01 + Math.random() * 0.045), 0.9);
+    }
+    // Laufspuren nach unten
+    for (let i = 0; i < 4; i++) {
+      const x = S / 2 + (Math.random() - 0.5) * S * 0.3;
+      const y0 = S / 2;
+      const len = S * (0.15 + Math.random() * 0.3);
+      ctx.fillStyle = 'rgba(105,2,2,0.85)';
+      ctx.fillRect(x - 2, y0, 4 + Math.random() * 3, len);
+      blob(x, y0 + len, 5, 0.9);
+    }
+    out.push(c.toDataURL());
+  }
+  return out;
 }

@@ -62,6 +62,7 @@
         <button id="btn-special" class="round mid special" hidden>Spezial</button>
       </div>
       <div id="hurt-flash"></div>
+      <div id="screen-blood"></div>
 
       <div id="guard-widget" hidden>
         <div class="foe-bars"><div class="foe-hp"><div id="foe-hp-fill"></div></div><div class="foe-st"><div id="foe-st-fill"></div></div></div>
@@ -216,6 +217,13 @@
         <select id="set-renderer">
           <option value="webgl2">WebGL2 (stabil)</option>
           <option value="webgpu">WebGPU (experimentell)</option>
+        </select>
+      </label>
+      <label>Brutalität
+        <select id="set-gore">
+          <option value="full">Voll (ab 18)</option>
+          <option value="reduced">Reduziert</option>
+          <option value="off">Aus (Funken statt Blut)</option>
         </select>
       </label>
       <label>Wetter

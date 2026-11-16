@@ -1102,6 +1102,7 @@ button.slim {
 }
 
 #hud.cine #buttons,
+#hud.cine #common-buttons,
 #hud.cine #stick-base,
 #hud.cine #hint,
 #hud.cine #foe-name,
@@ -1261,4 +1262,31 @@ button.mini {
 
 .hero-screen {
   height: calc(100dvh - 24px);
+}
+
+#screen-blood {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+#screen-blood .splat {
+  position: absolute;
+  background-size: contain;
+  background-repeat: no-repeat;
+  animation: splatRun 3.2s ease-in forwards;
+  filter: drop-shadow(0 0 2px rgba(60, 0, 0, 0.6));
+}
+@keyframes splatRun {
+  0% {
+    opacity: inherit;
+    margin-top: 0;
+  }
+  60% {
+    opacity: 0.75;
+  }
+  100% {
+    opacity: 0;
+    margin-top: 40px;
+  }
 }

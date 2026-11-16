@@ -166,6 +166,7 @@ async function boot(): Promise<void> {
   };
   const hud = new Hud(settings, {
     onSound: (on) => sound.setEnabled(on),
+    onGore: (lv) => game?.setGore(lv),
     onWeather: (w) => {
       if (game && game.role === 'solo') world.apply(w === 'random' ? randomWeather() : w, env.hours);
     },
@@ -183,6 +184,7 @@ async function boot(): Promise<void> {
   game = new Game(scene, camera, built.arena, player, dummy, input, hud, settings.difficulty, sound);
   const g = game;
   g.blockAssist = settings.blockAssist;
+  g.setGore(settings.gore);
   world.apply(world.pick().weather, settings.timeOfDay, false);
   const hero = loadHero();
   let hinted = false;

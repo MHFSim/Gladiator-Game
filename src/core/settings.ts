@@ -9,6 +9,7 @@ export interface Settings {
   timeOfDay: number; // Stunden, 6.0 – 20.5
   battery: boolean;
   sound: boolean;
+  gore: 'full' | 'reduced' | 'off';
   arena: 'capua' | 'colosseum';
   weather: 'random' | 'clear' | 'cloudy' | 'rain' | 'storm' | 'fog';
   showFps: boolean;
@@ -26,6 +27,7 @@ const DEFAULTS: Settings = {
   timeOfDay: 16.5,
   battery: false,
   sound: true,
+  gore: 'full',
   arena: 'capua',
   weather: 'random',
   showFps: false,

@@ -13,6 +13,8 @@ import { CLASSES, type ClassId } from '../data/classes';
 import { buildNet } from '../gladiators/gear';
 import { MeshBuilder, type Mesh } from '@babylonjs/core';
 import { Spectacle, type Deed, type Verdict } from './spectacle';
+import { Gore, type GoreLevel } from './gore';
+import type { SeverPart } from '../gladiators/gladiator';
 
 const TAU = Math.PI * 2;
 
@@ -36,6 +38,7 @@ export interface HudHooks {
   thumb(v: 'missio' | 'iugula' | null): void;
   cinematic(on: boolean): void;
   flash?(kind: 'hurt' | 'parry' | 'strike'): void;
+  screenBlood?(amount: number): void;
   special?(name: string | null, left: number, total: number): void;
 }
 
@@ -142,6 +145,7 @@ export class Game implements FighterEvents {
     this.ai = new AiController(this.foe, this.player, difficulty);
     this.ai.special = () => this.special(this.foe);
     this.fx = new Fx(scene);
+    this.gore = new Gore(scene, this.fx, () => this.arena.play);
     this.spec = new Spectacle(() => this.arena.crowd, sound, {
       now: () => this.now,
       isAuthority: () => this.role !== 'guest',
@@ -172,6 +176,78 @@ export class Game implements FighterEvents {
   }
 
   readonly spec: Spectacle;
+  readonly gore: Gore;
+  private weaponBlood = new Map<Fighter, number>();
+
+  /** Brutalität: voll, reduziert, aus */
+  setGore(level: GoreLevel): void {
+    this.gore.level = level;
+    this.fx.goreMul = level === 'full' ? 1 : level === 'reduced' ? 0.4 : 0;
+  }
+
+  /** Index aus Sicht des Gastgebers: 0 = Gastgeber-Figur, 1 = Gast-Figur */
+  private idx(f: Fighter): 0 | 1 {
+    const hostFig = this.role === 'guest' ? this.foe : this.player;
+    return f === hostFig ? 0 : 1;
+  }
+
+  private byIdx(w: number): Fighter {
+    if (this.role === 'guest') return w === 0 ? this.foe : this.player;
+    return w === 0 ? this.player : this.foe;
+  }
+
+  /** Körperteil abtrennen (auch beim Gast) */
+  private sever(f: Fighter, part: SeverPart, dir: Vector3, power = 1): void {
+    if (!this.gore.sever(f.g, part, dir, power)) return;
+    this.sfx('hit', true);
+    this.setShake(0.6);
+    if (Vector3.Distance(this.camera.position, f.pos) < 5) this.hud.screenBlood?.(1);
+    this.send('ev', { k: 'sever', w: this.idx(f), part, d: [dir.x, dir.y, dir.z], pw: power });
+  }
+
+  /** Wunde am Körper an der Trefferstelle */
+  private wound(f: Fighter, contact: Vector3, size: number): void {
+    const bone = f.g.nodes.get(contact.y > f.pos.y + f.g.chestHeight + 0.1 ? 'spine_03' : 'spine_02') ?? f.g.nodes.get('spine_02');
+    if (!bone) return;
+    this.fx.wound(f.g.id, bone, contact, size);
+    this.send('ev', { k: 'wound', w: this.idx(f), p: [contact.x, contact.y, contact.z], s: size });
+  }
+
+  /** Blut an der Waffe des Angreifers */
+  private bloodyWeapon(f: Fighter, add: number): void {
+    const k = Math.min(1, (this.weaponBlood.get(f) ?? 0) + add * this.fx.goreMul);
+    this.weaponBlood.set(f, k);
+    f.g.setWeaponBlood(k);
+    this.send('ev', { k: 'wblood', w: this.idx(f), v: k });
+  }
+
+  /** Blutung bei wenig Leben: Tropfen, Flecken im Sand */
+  private bleed(dt: number): void {
+    for (const f of [this.player, this.foe]) {
+      if (f.mode === 'dead' && f.g.severedParts === 0) continue;
+      const hpk = f.g.hp / f.stats.hpMax;
+      const rate = f.mode === 'dead' ? 3 : hpk < 0.5 ? (0.5 - hpk) * 14 : 0;
+      if (rate > 0 && Math.random() < rate * dt) {
+        this.fx.drip(f.pos.add(new Vector3((Math.random() - 0.5) * 0.3, f.g.chestHeight * (0.4 + Math.random() * 0.6), (Math.random() - 0.5) * 0.3)), 3);
+      }
+    }
+  }
+
+  /** Beim tödlichen Treffer: was fliegt weg? */
+  private goreKill(D: Fighter, push: Vector3, a: ActiveAttack | null, final: boolean): void {
+    if (this.gore.level !== 'full') return;
+    const big = !!a && (a.heavy || a.combo === 3 || a.power > 1.2);
+    if (Math.random() > (big ? 0.7 : 0.3)) return;
+    const r = Math.random();
+    // Im letzten Kampf bleibt der Kopf dran – der Kaiser entscheidet noch
+    let part: SeverPart = r < 0.42 && !final ? 'head' : r < 0.67 ? 'armR' : r < 0.8 ? 'armL' : Math.random() < 0.5 ? 'legL' : 'legR';
+    if (final && part === 'head') part = 'armR';
+    this.sever(D, part, push, big ? 1.4 : 1);
+    if (big && Math.random() < 0.3) {
+      const second: SeverPart = part === 'armR' ? 'armL' : 'armR';
+      this.later(0.12, () => this.sever(D, second, push.add(new Vector3(0, 0, 0)), 1.1));
+    }
+  }
   private trails = new Map<Fighter, TrailMesh>();
   private trailMat: StandardMaterial | null = null;
   private remoteAtk = new Map<Fighter, number>();
@@ -331,6 +407,11 @@ export class Game implements FighterEvents {
     this.scene.animationTimeScale = 1;
     this.spec.resetMatch();
     this.fx.clearPools();
+    this.fx.clearDecals();
+    this.fx.clearWounds();
+    this.gore.clear([this.player.g, this.foe.g]);
+    this.weaponBlood.clear();
+    for (const f of [this.player, this.foe]) f.g.setWeaponBlood(0);
     this.hud.score(0, 0);
     this.hud.foeName(`${this.foe.info.name} · Stufe ${this.foe.info.level}`);
     for (const f of [this.player, this.foe]) {
@@ -352,9 +433,10 @@ export class Game implements FighterEvents {
     if (this.net && this.role === 'host') this.net.send(ch, data);
   }
 
-  private blood(p: Vector3, d: Vector3): void {
-    this.fx.bloodAt(p, d);
-    this.send('ev', { k: 'blood', p: [p.x, p.y, p.z], d: [d.x, d.y, d.z] });
+  private blood(p: Vector3, d: Vector3, power = 1): void {
+    this.fx.bloodAt(p, d, power);
+    if (power >= 1.3 && Vector3.Distance(this.camera.position, p) < 3.6) this.hud.screenBlood?.(Math.min(1, power / 2.5) * this.fx.goreMul);
+    this.send('ev', { k: 'blood', p: [p.x, p.y, p.z], d: [d.x, d.y, d.z], pw: power });
   }
 
   private sparks(p: Vector3): void {
@@ -438,9 +520,31 @@ export class Game implements FighterEvents {
       return new Vector3(n[0], n[1], n[2]);
     };
     switch (e.k) {
-      case 'blood':
-        this.fx.bloodAt(v3(e.p), v3(e.d));
+      case 'blood': {
+        const pw = (e.pw as number) ?? 1;
+        const bp = v3(e.p);
+        this.fx.bloodAt(bp, v3(e.d), pw);
+        if (pw >= 1.3 && Vector3.Distance(this.camera.position, bp) < 3.6) this.hud.screenBlood?.(Math.min(1, pw / 2.5) * this.fx.goreMul);
         break;
+      }
+      case 'sever': {
+        const f = this.byIdx(e.w as number);
+        this.gore.sever(f.g, e.part as SeverPart, v3(e.d), (e.pw as number) ?? 1);
+        if (Vector3.Distance(this.camera.position, f.pos) < 5) this.hud.screenBlood?.(1);
+        break;
+      }
+      case 'wound': {
+        const f = this.byIdx(e.w as number);
+        const c = v3(e.p);
+        const bone = f.g.nodes.get(c.y > f.pos.y + f.g.chestHeight + 0.1 ? 'spine_03' : 'spine_02');
+        if (bone) this.fx.wound(f.g.id, bone, c, e.s as number);
+        break;
+      }
+      case 'wblood': {
+        const f = this.byIdx(e.w as number);
+        f.g.setWeaponBlood(e.v as number);
+        break;
+      }
       case 'sparks':
         this.fx.sparksAt(v3(e.p));
         break;
@@ -512,6 +616,8 @@ export class Game implements FighterEvents {
         this.pendingResult = null;
         break;
       case 'next':
+        this.gore.clear([this.player.g, this.foe.g]);
+        this.fx.clearWounds();
         this.hud.hint('Nächste Runde – kämpft!', 2);
         break;
     }
@@ -647,6 +753,8 @@ export class Game implements FighterEvents {
       this.net.send('in', { p: [p.pos.x, p.pos.z], h: p.g.heading, ly: p.g.legYaw, v: [p.vel.x, p.vel.z], bw: p.backwards });
     }
     this.fx.update(dt);
+    this.gore.update(dt);
+    this.bleed(dt);
     this.updateProjectiles(dt);
     this.updateCamera(dt);
     this.hud.favor(this.player.favor, this.foe.favor);
@@ -790,7 +898,7 @@ export class Game implements FighterEvents {
         this.sfx('block', true);
         this.deed('heavy', A);
         D.drain(COMBAT.guardBreak.stamina);
-        if (D.takeHit(chip, 'hit_chest', true)) return this.kill(D, push);
+        if (D.takeHit(chip, 'hit_chest', true)) return this.kill(D, push, a);
         D.guardBreak(COMBAT.guardBreak.stagger);
         this.impulse(D, push.scale(2.2));
         return;
@@ -828,8 +936,10 @@ export class Game implements FighterEvents {
     if (zone.debuff === 'weak') D.weakUntil = this.now + 3;
     if (zone.debuff === 'slow') D.slowUntil = this.now + 3;
     const big = a.heavy || a.combo === 3 || a.power > 1.2;
-    this.blood(contact, push);
-    if (big) this.blood(contact.add(new Vector3(0, 0.15, 0)), push);
+    this.blood(contact, push, big ? 1.6 : 1);
+    if (big) this.blood(contact.add(new Vector3(0, 0.15, 0)), push.add(new Vector3(0, 0.4, 0)), 1.2);
+    this.wound(D, contact, big ? 0.11 : 0.07);
+    this.bloodyWeapon(A, big ? 0.22 : 0.12);
     this.setShake(big ? 0.5 : 0.26);
     this.setHitStop(big ? 0.13 : 0.07);
     if (D === this.player) this.flash('hurt');
@@ -837,7 +947,7 @@ export class Game implements FighterEvents {
     this.float(this.chest(D), `${zone.name} −${dmg}`, youHit ? (big ? 'big' : 'good') : 'bad');
     this.sfx('hit', big);
     this.deed(zoneKey === 'top' ? 'head' : a.heavy ? 'heavy' : 'hit', A);
-    if (D.takeHit(dmg, big ? 'knockback' : zone.anim, big)) return this.kill(D, push);
+    if (D.takeHit(dmg, big ? 'knockback' : zone.anim, big)) return this.kill(D, push, a);
     this.impulse(D, push.scale(big ? 3.2 : 1.6));
   }
 
@@ -879,7 +989,10 @@ export class Game implements FighterEvents {
     this.deed('bash', A);
   }
 
-  private kill(D: Fighter, push: Vector3): void {
+  private kill(D: Fighter, push: Vector3, a: ActiveAttack | null = null): void {
+    const finalBlow = !this.roundOver && (D === this.foe ? this.wins + 1 : this.losses + 1) >= WINS_NEEDED;
+    this.blood(this.chest(D), push, 2.2);
+    this.goreKill(D, push, a, finalBlow);
     D.die();
     this.impulse(D, push.scale(1.5));
     this.setHitStop(0.25);
@@ -1147,7 +1260,11 @@ export class Game implements FighterEvents {
           fn: () => {
             const p = l.pos.add(new Vector3(0, l.g.chestHeight, 0));
             const dir = l.pos.subtract(w.pos).normalize();
-            for (let i = 0; i < 3; i++) this.blood(p.add(new Vector3(0, i * 0.12, 0)), dir);
+            for (let i = 0; i < 3; i++) this.blood(p.add(new Vector3(0, i * 0.12, 0)), dir, 2.5);
+            // Iugula: der Kopf fliegt
+            if (this.gore.level === 'full') this.sever(l, 'head', dir.add(new Vector3(0, 0.3, 0)), 1.3);
+            else this.wound(l, p, 0.14);
+            this.bloodyWeapon(w, 0.5);
             this.sfx('hit', true);
             this.setShake(0.5);
             this.setHitStop(0.18);
@@ -1183,6 +1300,8 @@ export class Game implements FighterEvents {
   }
 
   private newRound(): void {
+    this.gore.clear([this.player.g, this.foe.g]);
+    this.fx.clearWounds();
     for (const f of [this.player, this.foe]) {
       if (f.mode === 'dead') f.revive();
       else f.refill();
@@ -1302,6 +1421,8 @@ export class Game implements FighterEvents {
     this.arena.update(dt, daylight);
     this.fx.update(dt);
     this.runTimers();
+    this.gore.update(dt);
+    this.bleed(dt);
     this.updateProjectiles(dt);
     if (!freeze) this.updateCamera(dt);
     this.updateHud();

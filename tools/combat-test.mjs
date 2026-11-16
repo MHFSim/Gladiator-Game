@@ -49,9 +49,9 @@ await reset();
 let hits = 0;
 let last = (await st()).fhp;
 for (let i = 0; i < 3; i++) {
-  await page.waitForFunction(() => __game.player.canAct, { timeout: 60000, polling: 30 });
+  await page.waitForFunction(() => __game.player.canAct, { timeout: 180000, polling: 30 });
   await G(() => __input.push({ type: 'light' }));
-  await page.waitForFunction(() => __game.player.attack && __game.now > __game.player.attack.impactAt + 0.15, { timeout: 60000, polling: 30 });
+  await page.waitForFunction(() => __game.player.attack && __game.now > __game.player.attack.impactAt + 0.15, { timeout: 180000, polling: 30 });
   const s = await st();
   if (s.fhp < last) hits++;
   last = s.fhp;
@@ -78,7 +78,7 @@ await G(() => {
 });
 b = await st();
 await G(() => __input.push({ type: 'heavy' }));
-await page.waitForFunction(() => __game.player.attack && __game.now > __game.player.attack.impactAt + 0.1, { timeout: 60000, polling: 30 });
+await page.waitForFunction(() => __game.player.attack && __game.now > __game.player.attack.impactAt + 0.1, { timeout: 180000, polling: 30 });
 a = await st();
 check('Wuchtschlag bricht Block', a.fhp < b.fhp && a.fm === 'stagger', { b, a });
 

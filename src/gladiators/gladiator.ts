@@ -7,6 +7,7 @@ import {
   LoadAssetContainerAsync,
   Color3,
   Mesh,
+  MeshBuilder,
   PBRMaterial,
   Quaternion,
   Scene,
@@ -41,6 +42,8 @@ import {
   type Team,
 } from './gear';
 import { CLASSES, type ClassId } from '../data/classes';
+
+export type SeverPart = 'head' | 'armR' | 'armL' | 'legL' | 'legR';
 
 /** Aussehen: Klasse und Seltenheit je Platz [Waffe, Schild, Helm, Arme, Beine] */
 export interface Look {
@@ -595,6 +598,103 @@ export class Gladiator {
     return g;
   }
 
+  /* ---------- Zerstückelung ---------- */
+
+  private severedNodes: TransformNode[] = [];
+  private stumps: Mesh[] = [];
+  private stumpMat: PBRMaterial | null = null;
+
+  get severedParts(): number {
+    return this.severedNodes.length;
+  }
+
+  /** Körperteil abtrennen. Gibt Lage und mitgerissene Ausrüstung zurück (für das fliegende Teil). */
+  sever(part: SeverPart): { pos: Vector3; axis: Vector3; gear: Mesh[]; stump: Mesh; parent: TransformNode } | null {
+    const map: Record<SeverPart, { bone: string; sockets: string[] }> = {
+      head: { bone: 'Head', sockets: ['helmet'] },
+      armR: { bone: 'lowerarm_r', sockets: ['weapon', 'fore_r'] },
+      armL: { bone: 'lowerarm_l', sockets: ['shield', 'fore_l'] },
+      legL: { bone: 'calf_l', sockets: ['shin_l'] },
+      legR: { bone: 'calf_r', sockets: ['shin_r'] },
+    };
+    const m = map[part];
+    const node = this.nodes.get(m.bone);
+    if (!node || this.severedNodes.includes(node)) return null;
+    node.computeWorldMatrix(true);
+    const pos = node.getAbsolutePosition().clone();
+    const rot = node.absoluteRotationQuaternion.clone();
+    // Richtung vom Schnitt zum Ende des Teils
+    const endName = { head: 'Head', armR: 'hand_r', armL: 'hand_l', legL: 'foot_l', legR: 'foot_r' }[part];
+    const parentNode = node.parent as TransformNode;
+    let axis: Vector3;
+    if (part === 'head') {
+      axis = pos.subtract(parentNode.getAbsolutePosition());
+    } else {
+      const end = this.nodes.get(endName)!;
+      end.computeWorldMatrix(true);
+      axis = end.getAbsolutePosition().subtract(pos);
+    }
+    if (axis.lengthSquared() < 1e-6) axis = new Vector3(0, 1, 0);
+    axis.normalize();
+    // Ausrüstung an diesem Teil löst sich mit
+    const gear: Mesh[] = [];
+    for (const sk of m.sockets) {
+      const sock = this.sockets.get(sk);
+      if (!sock) continue;
+      for (const g of this.gear.filter((x) => x.parent === sock)) {
+        g.computeWorldMatrix(true);
+        g.setParent(null);
+        gear.push(g);
+      }
+    }
+    this.gear = this.gear.filter((g) => !gear.includes(g));
+    this.meshes = [...this.body, ...this.gear];
+    this.severedNodes.push(node);
+    // Stumpf: rohes Fleisch und Knochen an der Schnittstelle
+    if (!this.stumpMat) {
+      const sm = new PBRMaterial('stump_' + this.id, this.scene);
+      sm.albedoColor = new Color3(0.32, 0.015, 0.012);
+      sm.metallic = 0;
+      sm.roughness = 0.25;
+      sm.environmentIntensity = 0;
+      this.stumpMat = sm;
+    }
+    const bs = this.dims.bs;
+    const r = (part === 'head' ? 0.06 : part.startsWith('arm') ? 0.042 : 0.055) * bs;
+    const stump = MeshBuilder.CreateSphere('stump', { diameterX: r * 2.2, diameterY: r * 1.1, diameterZ: r * 2.2, segments: 8 }, this.scene);
+    stump.material = this.stumpMat;
+    stump.position.copyFrom(pos);
+    stump.rotationQuaternion = rot.clone();
+    stump.computeWorldMatrix(true);
+    stump.setParent(node.parent as TransformNode);
+    this.env.addCaster(stump);
+    this.stumps.push(stump);
+    return { pos, axis, gear, stump, parent: parentNode };
+  }
+
+  /** Neue Runde: alles wieder dran, Ausrüstung neu anlegen */
+  restoreBody(): void {
+    if (!this.severedNodes.length && !this.stumps.length) return;
+    for (const n of this.severedNodes) n.scaling.setAll(1);
+    this.severedNodes = [];
+    for (const s of this.stumps) s.dispose();
+    this.stumps = [];
+    const look = this.look;
+    this.look = null;
+    if (look) this.equip(look);
+  }
+
+  /** Blut an der Waffe (0..1) */
+  setWeaponBlood(k: number): void {
+    if (!this.look) return;
+    const key = 'iron' + this.look.tiers[0];
+    const m = this.tierMats.get(key);
+    if (!m) return;
+    const base = TIER_COLORS.iron[Math.max(0, Math.min(4, this.look.tiers[0]))];
+    m.albedoColor = Color3.Lerp(base, new Color3(0.28, 0.01, 0.01), Math.min(0.85, k));
+    m.roughness = 0.24 - Math.min(0.12, k * 0.12);
+  }
+
   /* ---------- Ausrüstung ---------- */
 
   sockets = new Map<string, TransformNode>();
@@ -707,6 +807,8 @@ export class Gladiator {
   /** Nach den Animationen: Beine in Laufrichtung, Oberkörper bleibt zum Gegner gerichtet */
   applyTwist(): void {
     this.align.rotation.y = this.baseAlignYaw + this.legYaw;
+    // Abgetrennte Körperteile: Knochen auf (fast) null skalieren, die Haut fällt dort in sich zusammen
+    for (const n of this.severedNodes) n.scaling.setAll(0.0001);
     if (this.headNode?.rotationQuaternion && this.headLift !== 0) {
       this.headNode.rotationQuaternion = this.headNode.rotationQuaternion.multiply(
         Quaternion.RotationAxis(this.headAxis, this.headLift * this.headUpSign),
