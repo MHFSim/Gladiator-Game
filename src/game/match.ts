@@ -43,6 +43,8 @@ export interface MatchSetup {
   weather?: string;
   time?: number;
   arena?: 'capua' | 'colosseum';
+  /** Fallen, Ereignisse und Bestien */
+  life?: boolean;
 }
 
 /** Farben je Team (im Jeder-gegen-jeden hat jeder sein eigenes Team) */

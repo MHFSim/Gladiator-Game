@@ -298,6 +298,44 @@ export class Sound {
     this.burst(60, 0.6, 3.6, 1.2 * s, 'lowpass', 0.3);
   }
 
+  /** Knurren eines Wolfs */
+  growl(): void {
+    if (!this.ctx || !this.enabled) return;
+    const f = 70 + Math.random() * 25;
+    this.tone(f, 0.7, 0.22, 'sawtooth', 0.8);
+    this.tone(f * 1.5, 0.6, 0.08, 'sawtooth', 0.7);
+    this.burst(320, 1.5, 0.7, 0.35, 'bandpass');
+  }
+
+  /** Brüllen des Stiers */
+  bellow(): void {
+    if (!this.ctx || !this.enabled) return;
+    this.tone(95, 1.3, 0.3, 'sawtooth', 0.62);
+    this.tone(142, 1.1, 0.12, 'sawtooth', 0.6);
+    this.burst(240, 0.8, 1.2, 0.5, 'lowpass');
+  }
+
+  /** Biss oder Stoß eines Tiers */
+  bite(): void {
+    if (!this.ctx || !this.enabled) return;
+    this.burst(900, 1.2, 0.09, 0.8, 'bandpass');
+    this.tone(180, 0.18, 0.3, 'sawtooth', 0.6);
+  }
+
+  /** Falle: Zahnräder unter dem Sand, dann schießen die Spieße heraus */
+  rumble(): void {
+    if (!this.ctx || !this.enabled) return;
+    this.burst(90, 0.7, 0.9, 0.9, 'lowpass');
+    for (let i = 0; i < 5; i++) this.burst(1400, 6, 0.04, 0.18, 'bandpass', i * 0.16);
+  }
+
+  spikes(): void {
+    if (!this.ctx || !this.enabled) return;
+    this.burst(3000, 1, 0.12, 0.6, 'highpass');
+    this.tone(900, 0.25, 0.08, 'triangle', 0.5);
+    this.burst(160, 0.8, 0.25, 0.8, 'lowpass');
+  }
+
   /** Fanfare (Tuba) für Kampfbeginn und Urteil */
   horn(low = false): void {
     if (!this.ctx || !this.enabled) return;

@@ -73,7 +73,7 @@ export function localTransport(code: string): Transport {
   const beat = window.setInterval(() => {
     post('_presence', null);
     for (const [p, seen] of peers) {
-      if (performance.now() - seen > 4000) {
+      if (performance.now() - seen > 15000) {
         peers.delete(p);
         leaves.forEach((f) => f(p));
       }

@@ -1371,3 +1371,14 @@ button:disabled {
 .mark.ally {
   color: #bfe0ff;
 }
+
+.life-opt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.life-opt input {
+  width: 16px;
+  height: 16px;
+  accent-color: #9e1b1b;
+}

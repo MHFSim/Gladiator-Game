@@ -58,6 +58,16 @@ const state = (p) =>
   });
 console.log('Start Host :', await state(host));
 for (const [i, g] of guests.entries()) console.log(`Start Gast${i + 1}:`, await state(g));
+// Tierhetze: der Gastgeber lässt Wölfe frei, die Gäste sehen sie
+await host.evaluate(() => window.__game.life.spawn('wolf', 2));
+await sleep(9000);
+const bs = (p) => p.evaluate(() => JSON.stringify(window.__game.life.beasts.map((b) => [b.id, b.kind, b.mode, +b.pos.x.toFixed(1), +b.pos.z.toFixed(1), b.clip])));
+console.log('Tiere Host :', await bs(host));
+console.log('Tiere Gast1:', await bs(guests[0]));
+await host.evaluate(() => window.__game.life.arm(window.__game.life.traps[0]));
+await sleep(2500);
+console.log('Falle Gast2:', await guests[1].evaluate(() => window.__game.life.traps[0].state));
+await guests[0].screenshot({ path: `${outDir}/net_life_guest1.png` });
 // Gast 1 läuft los
 await guests[0].evaluate(() => (window.__input.move.y = 0.9));
 await sleep(3000);
@@ -105,6 +115,6 @@ await guests[1].screenshot({ path: `${outDir}/net_group_guest2.png` });
 await host.evaluate(() => document.getElementById('r-again').click());
 await sleep(2000);
 await guests[1].close();
-await sleep(8000);
+await sleep(18000);
 console.log('Nach Abgang Host:', await state(host));
 await browser.close();

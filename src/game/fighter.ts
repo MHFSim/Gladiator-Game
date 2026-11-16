@@ -98,6 +98,8 @@ export class Fighter {
   vel = Vector3.Zero();
   speed = 0;
   target: Fighter | null = null;
+  /** Näher als das Ziel: ein Tier, dem man sich zuwendet */
+  focus: Vector3 | null = null;
   rollDir = Vector3.Zero();
   rollUntil = 0;
   backwards = false;
@@ -202,6 +204,11 @@ export class Fighter {
   }
 
   faceTarget(): void {
+    if (this.focus) {
+      const d = this.focus.subtract(this.pos);
+      this.g.setHeading(Math.atan2(d.x, d.z));
+      return;
+    }
     if (!this.target || this.target.mode === 'dead') return;
     const d = this.target.pos.subtract(this.pos);
     this.g.setHeading(Math.atan2(d.x, d.z));

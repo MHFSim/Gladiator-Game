@@ -31,6 +31,10 @@ export class AiController {
   /** Sonderfähigkeit auslösen (setzt das Spiel) */
   special: (() => void) | null = null;
   specialKind = '';
+  /** Nächstes Tier in der Nähe (setzt das Spiel) */
+  threat: (() => { pos: Vector3; charging: boolean; dist: number } | null) | null = null;
+  private nextBeastSwing = 0;
+  private dodgedCharge = false;
 
   constructor(
     private readonly self: Fighter,
@@ -92,6 +96,52 @@ export class AiController {
     }
   }
 
+  /** Ein Tier greift diese KI an: blocken oder parieren wie bei einem Gladiator */
+  onBeastAttack(impactAt: number, now: number): void {
+    const L = this.level;
+    const react = L.react * (0.8 + Math.random() * 0.45);
+    if (impactAt - now < react) return;
+    const r = Math.random();
+    if (r < L.parry) {
+      this.schedule(impactAt - 0.06 - Math.random() * (COMBAT.parryWindow * 0.6), () => {
+        this.self.setBlock(false);
+        this.self.setBlock(true);
+        this.releaseBlockAt = impactAt + 0.3;
+      });
+    } else if (r < L.parry + L.block) {
+      this.schedule(now + react, () => {
+        if (this.self.mode !== 'free' && this.self.mode !== 'block') return;
+        this.self.setBlock(true);
+        this.self.blockStart = -10;
+        this.releaseBlockAt = impactAt + 0.3;
+      });
+    }
+  }
+
+  /** Tiere: anstürmendem Stier ausweichen, nahe Tiere angreifen */
+  private beasts(now: number): void {
+    const th = this.threat?.();
+    const self = this.self;
+    if (!th) return;
+    if (!th.charging) this.dodgedCharge = false;
+    else if (!this.dodgedCharge && th.dist < 6.5 && self.canAct) {
+      this.dodgedCharge = true;
+      if (Math.random() < this.level.dodge + 0.35) {
+        const away = self.pos.subtract(th.pos);
+        away.y = 0;
+        away.normalize();
+        const side = new Vector3(away.z, 0, -away.x).scale(Math.random() < 0.5 ? 1 : -1);
+        self.setBlock(false);
+        this.schedule(now + this.level.react * 0.6, () => self.roll(side));
+      }
+      return;
+    }
+    if (self.canAct && !self.blockWanted && now >= this.nextBeastSwing && th.dist < self.kit.reach + 0.3) {
+      self.startAttack(Math.random() < 0.3);
+      this.nextBeastSwing = now + (0.6 + Math.random() * 0.9) * (1.35 - this.level.aggression);
+    }
+  }
+
   /** Liefert die gewünschte Bewegung (Richtung, Geschwindigkeit) */
   update(now: number): { dir: Vector3; speed: number } {
     const self = this.self;
@@ -106,6 +156,7 @@ export class AiController {
       return { dir: Vector3.Zero(), speed: 0 };
     }
     if (self.blockWanted && now >= this.releaseBlockAt) self.setBlock(false);
+    this.beasts(now);
 
     const toFoe = foe.pos.subtract(self.pos);
     toFoe.y = 0;

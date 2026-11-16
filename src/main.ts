@@ -186,6 +186,7 @@ async function boot(): Promise<void> {
   const g = game;
   g.blockAssist = settings.blockAssist;
   g.setGore(settings.gore);
+  g.life.caster = (m) => env.addCaster(m);
   world.apply(world.pick().weather, settings.timeOfDay, false);
   const hero = loadHero();
   let hinted = false;

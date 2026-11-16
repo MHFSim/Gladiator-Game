@@ -16,6 +16,8 @@ export interface Settings {
   installHintSeen: boolean;
   difficulty: number; // 0..4
   blockAssist: 'off' | 'show' | 'auto';
+  /** Arenaleben: Fallen, Ereignisse, Bestien */
+  life: boolean;
 }
 
 const KEY = 'seg.settings.v1';
@@ -34,6 +36,7 @@ const DEFAULTS: Settings = {
   installHintSeen: false,
   difficulty: 1,
   blockAssist: 'show',
+  life: true,
 };
 
 // localStorage kann in manchen Kontexten werfen (privater Modus) -> immer abfangen

@@ -101,6 +101,16 @@ export class Menu {
       });
     }
     this.markArena();
+    for (const id of ['train-life', 'host-life']) {
+      const cb = $<HTMLInputElement>(id);
+      cb.checked = settings.life;
+      cb.onchange = () => {
+        this.settings.life = cb.checked;
+        saveSettings(this.settings);
+        $<HTMLInputElement>('train-life').checked = cb.checked;
+        $<HTMLInputElement>('host-life').checked = cb.checked;
+      };
+    }
     this.applySolo(settings.difficulty);
     $('m-host').onclick = () => this.host();
     $('m-join').onclick = () => this.showJoin();
@@ -192,6 +202,7 @@ export class Menu {
       const lvl = AI_LEVELS[i];
       return {
         mode,
+        life: this.settings.life,
         fighters: [
           this.heroSetup(0, 'local'),
           {
@@ -215,7 +226,7 @@ export class Menu {
       const friend = isTeamMode(mode) && teams[k] === teams[0];
       fighters.push(aiSetup(friend ? ally : i, teams[k], names[k % names.length]));
     }
-    return { mode, fighters };
+    return { mode, fighters, life: this.settings.life };
   }
 
   /** Eigene Werte und KI-Gegner fürs Training setzen */
@@ -387,7 +398,7 @@ export class Menu {
       const fighters: FighterSetup[] = [fromMsg(this.heroMsg(), teams[0], 'local')];
       chosen.forEach(([peer, g], k) => fighters.push(fromMsg(g.hero, teams[k + 1], peer)));
       for (let k = fighters.length; k < size; k++) fighters.push(aiSetup(aiIdx, teams[k], names[k % names.length]));
-      const setup: MatchSetup = { mode, fighters, ...this.world.pick(), arena: this.settings.arena };
+      const setup: MatchSetup = { mode, fighters, ...this.world.pick(), arena: this.settings.arena, life: this.settings.life };
       const nicks: Record<string, string> = {};
       for (const [peer, g] of chosen) nicks[peer] = g.nick;
       started = true;

@@ -10,6 +10,7 @@ import { AiController } from './ai';
 import { COMBAT, Fighter, type ActiveAttack, type Dir, type FighterEvents, type Kit } from './fighter';
 import { Fx } from './fx';
 import { Gore, type GoreLevel } from './gore';
+import { ArenaLife, BEAST, type EnvHitKind, type EnvHitResult } from './life';
 import type { FighterInfo } from './hero';
 import { isTeamMode, spawnPoints, TEAM_COLORS, type FighterSetup, type MatchMode, type MatchSetup } from './match';
 import { Spectacle, type Deed, type Verdict } from './spectacle';
@@ -132,6 +133,7 @@ export class Game implements FighterEvents {
   private fx: Fx;
   readonly spec: Spectacle;
   readonly gore: Gore;
+  readonly life: ArenaLife;
   private yaw = 0;
   private pitch = 0.32;
   private lastDrag = 0;
@@ -160,6 +162,33 @@ export class Game implements FighterEvents {
     this.difficulty = difficulty;
     this.fx = new Fx(scene);
     this.gore = new Gore(scene, this.fx, () => this.arena.play);
+    this.life = new ArenaLife(scene, {
+      now: () => this.now,
+      authority: () => this.role !== 'guest',
+      fighters: () => this.fighters,
+      mode: () => this.mode,
+      calm: () => this.spec.inCeremony || this.roundOver || this.matchOver,
+      envHit: (D, dmg, from, kind) => this.envHit(D, dmg, from, kind),
+      beastAttack: (D, at) => this.ais.get(D)?.onBeastAttack(at, this.now),
+      blood: (p, d, pw) => this.blood(p, d, pw),
+      pool: (p, sc) => {
+        this.fx.pool(p, sc);
+        this.send('ev', { k: 'pool', p: [p.x, p.z], s: sc });
+      },
+      sfx: (n) => this.sfx(n),
+      shake: (v) => this.setShake(v),
+      announce: (t) => {
+        this.hud.hint(t, 2.6);
+        this.send('ev', { k: 'msg', t });
+      },
+      float: (p, t) => {
+        this.hud.floatText(p, t, '');
+        this.send('ev', { k: 'float', p: [p.x, p.y, p.z], t, s: 0, o: -1, g: null, b: false });
+      },
+      kick: (v) => this.spec.kick(v),
+      send: (ev) => this.send('ev', ev),
+    });
+    this.life.setArena(arena);
     this.spec = new Spectacle(() => this.arena.crowd, sound, {
       now: () => this.now,
       isAuthority: () => this.role !== 'guest',
@@ -286,6 +315,20 @@ export class Game implements FighterEvents {
     }
   }
 
+  /** Tier in der Nähe, näher als das Ziel: dorthin schauen und schlagen */
+  private updateFocus(): void {
+    for (const f of this.fighters) {
+      if (f.mode === 'dead') {
+        f.focus = null;
+        continue;
+      }
+      const b = this.life.nearest(f.pos, 2.8);
+      const t = this.role === 'guest' ? f.target : this.opp(f);
+      const bd = b ? Vector3.Distance(b.pos, f.pos) : Infinity;
+      f.focus = b && (!t || bd < Vector3.Distance(t.pos, f.pos) - 0.3) ? b.pos : null;
+    }
+  }
+
   /** Ziel wechseln (Aufschalt-Taste bei mehreren Gegnern) */
   private cycleTarget(f: Fighter): void {
     const list = this.enemies(f).sort((a, b) => Vector3.Distance(a.pos, f.pos) - Vector3.Distance(b.pos, f.pos));
@@ -311,6 +354,8 @@ export class Game implements FighterEvents {
     this.aiMoves.clear();
     this.mode = setup.mode;
     this.setups = setup.fighters;
+    this.life.enabled = setup.life ?? true;
+    if (this.role === 'guest' && this.life.enabled) this.life.preload();
     this.fighters = setup.fighters.map((fs, i) => {
       const g = this.gladiator(i);
       g.animator.listener = null;
@@ -336,9 +381,20 @@ export class Game implements FighterEvents {
         const ai = new AiController(f, () => f.target, setup.fighters[i].ai ?? this.difficulty);
         ai.special = () => this.special(f);
         ai.specialKind = CLASSES[f.cls].special.id;
+        ai.threat = () => this.threatFor(f);
         this.ais.set(f, ai);
       }
     }
+  }
+
+  /** Für die KI: nächstes Tier und ob es gerade anstürmt */
+  private threatFor(f: Fighter): { pos: Vector3; charging: boolean; dist: number } | null {
+    const b = this.life.nearest(f.pos, 8);
+    if (!b) return null;
+    const dist = Vector3.Distance(b.pos, f.pos) - BEAST[b.kind].radius * 0.5;
+    const charging = (b.mode === 'charge' || (b.mode === 'windup' && b.kind === 'bull' && !b.struck)) && b.target === f;
+    if (!charging && dist > 3) return null;
+    return { pos: b.pos, charging, dist };
   }
 
   private weatherRules = { regenMul: 1, rollCostMul: 1 };
@@ -365,6 +421,7 @@ export class Game implements FighterEvents {
   /** Andere Arena (nach dem Umbau der Szene) */
   setArena(a: Arena): void {
     this.arena = a;
+    this.life.setArena(a);
     this.resetMatch();
   }
 
@@ -425,7 +482,11 @@ export class Game implements FighterEvents {
     if (this.boundNet !== net) {
       this.boundNet = net;
       if (role === 'guest') {
-        net.on('snap', (d) => this.onSnap(d as { f: NetFighter[]; x?: number }));
+        net.on('snap', (d) => {
+          const m = d as { f: NetFighter[]; x?: number; bs?: [number, number, number, number, number, number, number][] };
+          this.onSnap(m);
+          this.life.applySnap(m.bs);
+        });
         net.on('anim', (d) => {
           const m = d as { w: number; cmd: AnimCmd };
           this.fighters[m.w]?.g.animator.apply(m.cmd);
@@ -467,6 +528,7 @@ export class Game implements FighterEvents {
         const ai = new AiController(f, () => f.target, this.difficulty);
         ai.special = () => this.special(f);
         ai.specialKind = CLASSES[f.cls].special.id;
+        ai.threat = () => this.threatFor(f);
         this.ais.set(f, ai);
         this.remoteIn.delete(f);
         if (this.net) {
@@ -517,6 +579,7 @@ export class Game implements FighterEvents {
     this.fx.clearWounds();
     this.gore.clear(this.fighters.map((f) => f.g));
     this.weaponBlood.clear();
+    this.life.reset();
     for (const f of this.fighters) {
       f.g.setWeaponBlood(0);
       if (this.role !== 'guest') f.refill();
@@ -629,7 +692,7 @@ export class Game implements FighterEvents {
   }
 
   /** Ton lokal abspielen und bei den Gästen auch */
-  private sfx(n: 'clash' | 'block' | 'hit' | 'whoosh' | 'fall' | 'horn', h = false): void {
+  private sfx(n: 'clash' | 'block' | 'hit' | 'whoosh' | 'fall' | 'horn' | 'growl' | 'bellow' | 'bite' | 'rumble' | 'spikes', h = false): void {
     (this.sound[n] as (h: boolean) => void).call(this.sound, h);
     this.send('ev', { k: 'sfx', n, h });
   }
@@ -775,6 +838,12 @@ export class Game implements FighterEvents {
         this.updateScore();
         if (e.w === this.meIdx) this.hud.hint('Du bist gefallen – schau zu, wie dein Team kämpft', 3);
         break;
+      case 'trap':
+        this.life.onTrap(e.i as number, e.s as 'idle');
+        break;
+      case 'trapb':
+        this.life.onTrapBlood(e.i as number);
+        break;
       case 'rematch':
         this.resetMatch();
         this.onRematch?.();
@@ -792,7 +861,7 @@ export class Game implements FighterEvents {
       }
       case 'pool': {
         const pp = e.p as number[];
-        this.fx.pool(new Vector3(pp[0], 0, pp[1]));
+        this.fx.pool(new Vector3(pp[0], 0, pp[1]), (e.s as number) ?? 1);
         break;
       }
       case 'sfx':
@@ -901,6 +970,9 @@ export class Game implements FighterEvents {
       }
       case 'light':
       case 'heavy':
+        if (p.focus && p.canAct) p.faceTarget();
+        this.net.send('act', a);
+        break;
       case 'bash':
       case 'cheer':
       case 'special':
@@ -933,6 +1005,8 @@ export class Game implements FighterEvents {
     const acts = this.input.takeActions();
     if (!this.spec.inCeremony) for (const a of acts) this.sendGuestAction(a);
     this.interpolateOthers();
+    this.life.update(dt);
+    this.updateFocus();
     const p = this.player;
     if (this.now >= this.guestRollUntil && p.mode === 'roll') p.mode = 'free';
     if (!this.spec.inCeremony && p.mode !== 'dead') {
@@ -974,7 +1048,7 @@ export class Game implements FighterEvents {
     this.snapTimer += dt;
     if (this.snapTimer >= 0.05 && this.net) {
       this.snapTimer = 0;
-      this.net.send('snap', { f: this.fighters.map((f) => this.netFighter(f)), x: Math.round(this.spec.excite * 100) / 100 });
+      this.net.send('snap', { f: this.fighters.map((f) => this.netFighter(f)), x: Math.round(this.spec.excite * 100) / 100, bs: this.life.snap() });
     }
   }
 
@@ -1031,7 +1105,15 @@ export class Game implements FighterEvents {
   /** Parade, Block oder Treffer. Wer zu spät blockt, bekommt eine kurze Gnadenfrist. */
   private resolve(A: Fighter, a: ActiveAttack, afterGrace: boolean, fixed: Fighter | null): void {
     if (A.attack !== a || A.mode !== 'attack') return;
-    const D = fixed ?? this.victim(A, A.kit.reach, COMBAT.maxAngle);
+    let D = fixed ?? this.victim(A, A.kit.reach, COMBAT.maxAngle);
+    if (!fixed) {
+      // Ein Tier näher als der getroffene Gegner (und kein bewusst gewähltes Ziel)? Dann trifft es das Tier.
+      const B = this.life.beastFor(A, A.kit.reach, COMBAT.maxAngle);
+      if (B && (!D || (D !== A.target && Vector3.Distance(B.pos, A.pos) < Vector3.Distance(D.pos, A.pos)) || (A.focus && A.focus === B.pos))) {
+        this.hitBeast(A, a, B);
+        return;
+      }
+    }
     if (!D || D.mode === 'dead') {
       if (A === this.player && !afterGrace) this.sfx('whoosh', false);
       return;
@@ -1147,6 +1229,93 @@ export class Game implements FighterEvents {
     return (a.heavy ? A.stats.heavyMul : A.stats.lightMul) * (head ? A.stats.headMul : 1) * a.power * ch;
   }
 
+  /** Treffer durch Tier oder Falle (Block, Parade und Ausweichen gelten auch hier) */
+  envHit(D: Fighter, dmg: number, from: Vector3, kind: EnvHitKind): EnvHitResult {
+    if (D.mode === 'dead') return 'dodge';
+    const push = D.pos.subtract(from);
+    push.y = 0;
+    if (push.length() < 1e-3) push.set(Math.sin(D.g.heading + Math.PI), 0, Math.cos(D.g.heading + Math.PI));
+    push.normalize();
+    const contact = D.pos.add(push.scale(-0.35));
+    contact.y = kind === 'spikes' ? 0.6 : D.g.chestHeight - (kind === 'bite' ? 0.35 : 0.1);
+    if (this.now < D.invulnUntil) {
+      this.float(this.chest(D), 'Ausgewichen', D, true);
+      this.deed('dodge', D);
+      this.spec.kick(0.2);
+      return 'dodge';
+    }
+    const toSrc = from.subtract(D.pos);
+    const facing = Math.abs(angleDiff(D.g.heading, Math.atan2(toSrc.x, toSrc.z))) < COMBAT.blockAngle;
+    if (kind !== 'spikes' && D.blocking && facing) {
+      if (kind !== 'charge' && this.now - D.blockStart <= COMBAT.parryWindow + D.stats.parryBonus) {
+        D.parrySucceeded();
+        this.sparks(contact);
+        this.setHitStop(0.12);
+        this.setShake(0.3);
+        this.float(this.chest(D), 'Parade!', D, true);
+        this.sfx('clash', true);
+        this.deed('parry', D);
+        return 'parry';
+      }
+      if (kind === 'charge') {
+        this.sparks(contact);
+        this.float(this.chest(D), 'Umgerannt!', D, false);
+        this.sfx('block', true);
+        this.setShake(0.55);
+        D.drain(40);
+        if (D.takeHit(Math.round(dmg * 0.3), 'knockback', true)) {
+          this.kill(D, push, null, null);
+          return 'hit';
+        }
+        D.guardBreak(1.1);
+        this.impulse(D, push.scale(5.5));
+        return 'block';
+      }
+      D.blockReact(dmg * 1.3, false);
+      this.sparks(contact);
+      this.sfx('block', false);
+      this.float(this.chest(D), 'Geblockt', D, true);
+      this.impulse(D, push.scale(1.2));
+      this.deed('block', D);
+      return 'block';
+    }
+    const big = kind === 'charge' || kind === 'spikes';
+    const label = kind === 'bite' ? 'Biss' : kind === 'charge' ? 'Hörner' : kind === 'horn' ? 'Stoß' : 'Spieße';
+    this.blood(contact, kind === 'spikes' ? new Vector3(0, 1, 0) : push, big ? 2 : 1.2);
+    this.wound(D, contact, big ? 0.12 : 0.08);
+    this.setShake(big ? 0.55 : 0.28);
+    this.setHitStop(big ? 0.12 : 0.06);
+    this.applyHitFx(D, D, big ? 'big' : 'hit');
+    this.send('ev', { k: 'hfx', a: this.idx(D), d: this.idx(D), x: big ? 'big' : 'hit' });
+    this.float(this.chest(D), `${label} −${dmg}`, D, false, null, big);
+    this.sfx('hit', big);
+    if (D.takeHit(dmg, big ? 'knockback' : 'hit_chest', big)) {
+      this.kill(D, kind === 'spikes' ? new Vector3(0, 1, 0) : push, null, null);
+      return 'hit';
+    }
+    if (kind === 'spikes') D.slowUntil = this.now + 3;
+    this.impulse(D, push.scale(kind === 'charge' ? 6 : kind === 'spikes' ? 0.5 : 1.4));
+    return 'hit';
+  }
+
+  /** Schlag eines Kämpfers gegen ein Tier */
+  private hitBeast(A: Fighter, a: ActiveAttack, b: (typeof this.life.beasts)[number]): void {
+    const dir = b.pos.subtract(A.pos);
+    dir.y = 0;
+    dir.normalize();
+    const big = a.heavy || a.combo === 3;
+    const dmg = Math.round(a.def.damage * this.mul(A, a, false) * (b.mode === 'stun' ? 1.5 : 1));
+    const p = b.pos.add(new Vector3(0, BEAST[b.kind].height * 0.65, 0)).subtract(dir.scale(BEAST[b.kind].radius * 0.4));
+    this.blood(p, dir, big ? 1.8 : 1.2);
+    this.bloodyWeapon(A, big ? 0.2 : 0.1);
+    this.setShake(big ? 0.4 : 0.2);
+    this.setHitStop(big ? 0.1 : 0.05);
+    this.sfx('hit', big);
+    this.float(p.add(new Vector3(0, 0.4, 0)), `${BEAST[b.kind].name} −${dmg}`, A, true, null, big);
+    this.deed(big ? 'heavy' : 'hit', A);
+    if (this.life.damage(b, dmg, dir, big, A)) this.deed('kill', A);
+  }
+
   bashImpact(A: Fighter): void {
     if (A.mode !== 'bash') return;
     const D = this.victim(A, COMBAT.bash.range, 1.0) ?? this.opp(A);
@@ -1204,6 +1373,7 @@ export class Game implements FighterEvents {
   private duelKill(D: Fighter): void {
     if (this.roundOver) return;
     this.roundOver = true;
+    this.life.retreat();
     const winner = this.fighters.find((f) => f !== D && f.mode !== 'dead') ?? this.opp(D) ?? this.player;
     const wt = winner.team;
     this.teamWins[wt] = (this.teamWins[wt] ?? 0) + 1;
@@ -1227,6 +1397,7 @@ export class Game implements FighterEvents {
     const alive = new Set(this.fighters.filter((f) => f.mode !== 'dead').map((f) => f.team));
     if (alive.size > 1 || this.matchOver) return;
     this.matchOver = true;
+    this.life.retreat();
     const wt = alive.size === 1 ? [...alive][0] : -1;
     if (wt >= 0) this.teamWins[wt] = 1;
     const won = wt === this.player.team;
@@ -1603,6 +1774,7 @@ export class Game implements FighterEvents {
       else f.refill();
     }
     this.roundOver = false;
+    this.life.reset();
     this.updateTargets(true);
     for (const a of this.ais.values()) a.reset(this.now);
     this.spec.resetRound();
@@ -1712,8 +1884,10 @@ export class Game implements FighterEvents {
     const due = this.grace.filter((g) => g.at <= this.now);
     this.grace = this.grace.filter((g) => g.at > this.now);
     for (const g of due) this.resolve(g.A, g.a, true, g.D);
+    this.updateFocus();
     if (!freeze && !ceremony) for (const [f, ai] of this.ais) this.aiMoves.set(f, ai.update(this.now));
     this.spec.update(dt);
+    this.life.update(dt);
 
     if (ceremony) this.moveCeremony(dt);
     else {
@@ -1801,13 +1975,18 @@ export class Game implements FighterEvents {
   /** Namen und Leben über allen anderen Kämpfern */
   private updateMarks(): void {
     if (!this.hud.marks) return;
-    if (this.fighters.length <= 2 || this.spec.inCeremony) {
+    if (this.spec.inCeremony) {
       this.hud.marks([]);
       return;
     }
     const me = this.player;
     const list: Mark[] = [];
+    for (const b of this.life.visible) {
+      const s = this.hud.project(b.pos.add(new Vector3(0, BEAST[b.kind].height + 0.45, 0)));
+      if (s) list.push({ x: s.x, y: s.y, hp: (100 * b.hp) / BEAST[b.kind].hp, ally: false, name: BEAST[b.kind].name });
+    }
     for (const f of this.fighters) {
+      if (this.fighters.length <= 2) break;
       if (f === me || f.mode === 'dead' || (this.locked && f === this.foe)) continue;
       const s = this.hud.project(f.pos.add(new Vector3(0, f.g.chestHeight + 0.75, 0)));
       if (!s) continue;
@@ -1847,7 +2026,13 @@ export class Game implements FighterEvents {
 
     // Blickrichtung
     if (f.mode !== 'roll' && f.mode !== 'dead') {
-      if (locked && f.target && f.target.mode !== 'dead') {
+      if (locked && f.focus && f.mode !== 'free') {
+        const d = f.focus.subtract(f.pos);
+        g.setHeading(g.heading + angleDiff(g.heading, Math.atan2(d.x, d.z)) * Math.min(1, dt * 12));
+      } else if (locked && f.focus && mag < 0.05) {
+        const d = f.focus.subtract(f.pos);
+        g.setHeading(g.heading + angleDiff(g.heading, Math.atan2(d.x, d.z)) * Math.min(1, dt * 8));
+      } else if (locked && f.target && f.target.mode !== 'dead') {
         const d = f.target.pos.subtract(f.pos);
         const want = Math.atan2(d.x, d.z);
         g.setHeading(g.heading + angleDiff(g.heading, want) * Math.min(1, dt * 12));
@@ -1910,7 +2095,12 @@ export class Game implements FighterEvents {
   }
 
   private moveAi(f: Fighter, dt: number, freeze: boolean): void {
-    const m = freeze ? { dir: Vector3.Zero(), speed: 0 } : (this.aiMoves.get(f) ?? { dir: Vector3.Zero(), speed: 0 });
+    let m = freeze ? { dir: Vector3.Zero(), speed: 0 } : (this.aiMoves.get(f) ?? { dir: Vector3.Zero(), speed: 0 });
+    const flee = freeze ? null : this.life.danger(f.pos);
+    if (flee) {
+      if (f.mode === 'block') f.setBlock(false);
+      m = { dir: flee, speed: 5 };
+    }
     this.steer(f, m.dir, Math.min(1, m.speed / this.maxSpeed(f, true)), true, dt);
   }
 
@@ -1937,6 +2127,7 @@ export class Game implements FighterEvents {
     };
     for (const o of this.arena.obstacles) push(o.x, o.z, o.r);
     if (f.mode === 'dead') return;
+    for (const b of this.life.beasts) if (b.alive) push(b.pos.x, b.pos.z, BEAST[b.kind].radius - 0.05);
     for (const other of this.fighters) {
       if (other !== f && other.mode !== 'dead') push(other.pos.x, other.pos.z, 0.42);
     }
