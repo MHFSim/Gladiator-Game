@@ -122,6 +122,9 @@ async function boot(): Promise<void> {
   };
   const hud = new Hud(settings, {
     onDifficulty: (i) => game?.setDifficulty(i),
+    onAssist: (m) => {
+      if (game) game.blockAssist = m;
+    },
     project,
     onScheme: (s) => (input.scheme = s),
     onTime: (h) => env.setTime(h),
@@ -132,6 +135,7 @@ async function boot(): Promise<void> {
   hud.onCheer(() => input.push({ type: 'cheer' }));
   game = new Game(scene, camera, arena, player, dummy, input, hud, settings.difficulty);
   const g = game;
+  g.blockAssist = settings.blockAssist;
 
   progress(0.95, 'Die Tore öffnen sich …');
   // Nicht ewig auf Shader warten: nach 12 s trotzdem starten (fehlende Shader werden nachgeladen)
@@ -156,10 +160,10 @@ async function boot(): Promise<void> {
     const frameDt = settings.battery ? acc : dt;
     acc = 0;
     if (!paused) g.update(frameDt, env.daylight, params.has('freeze'));
-    if (view === 'hero') g.debugCamera(new Vector3(1.6, 1.7, -3.9), new Vector3(0, 1.25, -6));
+    if (view === 'hero') g.debugCamera(g.player.pos.add(new Vector3(1.6, 1.7, 2.1)), g.player.pos.add(new Vector3(0, 1.25, 0)));
     if (view === 'arena') g.debugCamera(new Vector3(9, 6.5, -12), new Vector3(-2, 1.5, 2));
-    if (view === 'front') g.debugCamera(new Vector3(0.4, 1.7, -3.6), new Vector3(0, 1.35, -6));
-    if (view === 'face') g.debugCamera(new Vector3(0.15, 1.75, -4.9), new Vector3(0, 1.62, -6));
+    if (view === 'front') g.debugCamera(g.player.pos.add(new Vector3(0.4, 1.7, 2.4)), g.player.pos.add(new Vector3(0, 1.35, 0)));
+    if (view === 'face') g.debugCamera(g.player.pos.add(new Vector3(0.3, 1.55, 1.1)), g.player.pos.add(new Vector3(0, 1.5, 0.05)));
     if (view === 'up') g.debugCamera(new Vector3(0, 1.7, -8), new Vector3(-6, 9, 12));
     if (view === 'side') g.debugCamera(g.player.pos.add(new Vector3(-3.2, 1.5, 1.2)), g.player.pos.add(new Vector3(0, 1.0, 0)));
     if (view === 'duel') g.debugCamera(new Vector3(4.5, 2.2, -3), new Vector3(0, 1.2, -1.8));

@@ -31,6 +31,9 @@ export interface GuardInfo {
   foe: Dir; // Seite aus Spielersicht
   incoming: Dir | null; // aus Spielersicht
   heavy: boolean;
+  impactIn: number | null; // Sekunden bis zum Treffer (für die Zeitanzeige)
+  windup: number;
+  parryWindow: number;
   foeHp: number;
   foeSt: number;
 }
@@ -93,6 +96,7 @@ export class Game implements FighterEvents {
 
   attackStart(f: Fighter, a: ActiveAttack): void {
     if (f === this.player) this.ai.onFoeAttack(a, this.now);
+    else if (this.blockAssist === 'auto') this.autoGuard = { dir: blockSideFor(a.dir), at: this.now + 0.22 };
   }
 
   feint(f: Fighter): void {
@@ -117,8 +121,17 @@ export class Game implements FighterEvents {
     return Math.abs(angleDiff(a.g.heading, Math.atan2(d.x, d.z))) < maxAngle;
   }
 
-  /** Der Treffer-Moment eines Angriffs: Parade, Block oder Treffer */
+  /** Der Treffer-Moment eines Angriffs */
   impact(A: Fighter, a: ActiveAttack): void {
+    this.resolve(A, a, false);
+  }
+
+  private grace: { A: Fighter; a: ActiveAttack; at: number }[] = [];
+  private autoGuard: { dir: Dir; at: number } | null = null;
+  blockAssist: 'off' | 'show' | 'auto' = 'show';
+
+  /** Parade, Block oder Treffer. Wer zu spät blockt, bekommt eine kurze Gnadenfrist. */
+  private resolve(A: Fighter, a: ActiveAttack, afterGrace: boolean): void {
     const D = A === this.player ? this.foe : this.player;
     if (A.attack !== a || A.mode !== 'attack' || D.mode === 'dead') return;
     const dist = Vector3.Distance(A.pos, D.pos);
@@ -169,6 +182,12 @@ export class Game implements FighterEvents {
       this.shake = a.heavy ? 0.18 : 0.1;
       this.hitStop = a.heavy ? 0.07 : 0.04;
       this.hud.floatText(this.chest(D), 'Geblockt', youHit ? '' : 'good');
+      return;
+    }
+
+    // Knapp zu spät? Kurz warten, ob die Deckung noch rechtzeitig wechselt
+    if (!afterGrace && (D.mode === 'free' || D.mode === 'parry')) {
+      this.grace.push({ A, a, at: this.now + COMBAT.blockGrace });
       return;
     }
 
@@ -336,6 +355,15 @@ export class Game implements FighterEvents {
     this.input.locked = this.locked;
 
     for (const a of this.input.takeActions()) this.handle(a);
+    // Gnadenfrist abarbeiten
+    const due = this.grace.filter((g) => g.at <= this.now);
+    this.grace = this.grace.filter((g) => g.at > this.now);
+    for (const g of due) this.resolve(g.A, g.a, true);
+    // Block-Hilfe: Deckung automatisch auf die Angriffsseite
+    if (this.autoGuard && this.now >= this.autoGuard.at) {
+      if (this.player.mode === 'free') this.player.setGuard(this.autoGuard.dir);
+      this.autoGuard = null;
+    }
     if (!freeze) this.aiMove = this.ai.update(this.now);
 
     this.movePlayer(dt);
@@ -363,6 +391,9 @@ export class Game implements FighterEvents {
       foe: blockSideFor(this.foe.guard),
       incoming: fa && this.now < fa.impactAt ? blockSideFor(fa.dir) : null,
       heavy: !!fa?.heavy,
+      impactIn: fa && this.now < fa.impactAt && this.blockAssist !== 'off' ? fa.impactAt - this.now : null,
+      windup: fa ? fa.impactAt - fa.start : 1,
+      parryWindow: COMBAT.parryWindow,
       foeHp: this.foe.g.hp,
       foeSt: this.foe.g.stamina,
     });

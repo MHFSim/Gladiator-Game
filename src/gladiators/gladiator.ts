@@ -86,6 +86,8 @@ export interface PlayOptions {
   fadeIn?: number;
   fadeOut?: number;
   loop?: boolean;
+  /** Gesamtdauer in Sekunden überschreiben (wenn das Tempo unterwegs geändert wird) */
+  duration?: number;
   /** Ereignisse bei einem Anteil (0..1) der Dauer */
   events?: { at: number; fn: () => void }[];
   onEnd?: () => void;
@@ -182,7 +184,7 @@ export class Animator {
       group: g,
       weight: 0,
       elapsed: 0,
-      duration: this.durationOf(name, speed, opts.range),
+      duration: opts.duration ?? this.durationOf(name, speed, opts.range),
       fadeIn: opts.fadeIn ?? 0.1,
       fadeOut: opts.fadeOut ?? 0.15,
       loop: opts.loop ?? false,
@@ -208,6 +210,11 @@ export class Animator {
   /** Beendet alle Aktionen einer Animation (z. B. eine Schleife) */
   stop(name: string): void {
     for (const a of this.actions) if (a.group.name.startsWith(name + '#') || a.group.name === name) a.fading = true;
+  }
+
+  /** Tempo einer laufenden Aktion ändern (z. B. langsames Ausholen, schneller Schwung) */
+  setActionSpeed(id: number, speed: number): void {
+    for (const a of this.actions) if (a.id === id) a.group.speedRatio = speed;
   }
 
   isPlaying(id: number): boolean {
@@ -266,6 +273,11 @@ export class Gladiator {
   baseAlignYaw = 0;
   twistBones: { node: TransformNode; axis: Vector3; w: number }[] = [];
   twistSign = 1;
+  headNode: TransformNode | null = null;
+  headAxis = new Vector3(1, 0, 0);
+  headUpSign = 1;
+  /** Kopf anheben (Radiant) */
+  headLift = 0.32;
   /** Drehung der Beine relativ zur Blickrichtung (Radiant). Der Oberkörper dreht entgegen. */
   legYaw = 0;
   readonly chestHeight: number;
@@ -373,8 +385,8 @@ export class Gladiator {
     {
       const head = P('Head');
       const up = new Vector3(0, 1, 0);
-      const center = head.add(up.scale(0.09 * bs)).add(new Vector3(0, 0, 0.012 * bs));
-      const helmet = buildHelmet(scene, mat, bs * 0.95);
+      const center = head.add(up.scale(0.115 * bs)).add(new Vector3(0, 0, -0.012 * bs));
+      const helmet = buildHelmet(scene, mat, bs * 0.86);
       attach(helmet, 'Head', center, up, new Vector3(0, 0, 1));
     }
     // Manica am rechten Arm (Unter- und Oberarm)
@@ -459,6 +471,26 @@ export class Gladiator {
     if (d > Math.PI) d -= Math.PI * 2;
     if (d < -Math.PI) d += Math.PI * 2;
     g.twistSign = d >= 0 ? 1 : -1;
+    // Kopf etwas anheben: die Kampf-Animationen schauen stark nach unten, so sieht man das Gesicht
+    {
+      const head = need('Head');
+      const inv = head.getWorldMatrix().clone().invert();
+      const axis = Vector3.TransformNormal(new Vector3(1, 0, 0), inv).normalize();
+      const fwdY = () => {
+        refresh();
+        const m = head.getWorldMatrix();
+        return Vector3.TransformNormal(new Vector3(0, 0, 1), m).normalize().y;
+      };
+      const q0 = head.rotationQuaternion!.clone();
+      const y0 = fwdY();
+      head.rotationQuaternion = q0.multiply(Quaternion.RotationAxis(axis, 0.3));
+      const y1 = fwdY();
+      head.rotationQuaternion = q0;
+      refresh();
+      g.headNode = head;
+      g.headAxis = axis;
+      g.headUpSign = y1 > y0 ? 1 : -1;
+    }
     scene.onAfterAnimationsObservable.add(() => g.applyTwist());
     (window as unknown as Record<string, unknown>)['__pose_' + id] = () => {
       const w = (n: string) => need(n).getAbsolutePosition();
@@ -475,6 +507,11 @@ export class Gladiator {
   /** Nach den Animationen: Beine in Laufrichtung, Oberkörper bleibt zum Gegner gerichtet */
   applyTwist(): void {
     this.align.rotation.y = this.baseAlignYaw + this.legYaw;
+    if (this.headNode?.rotationQuaternion && this.headLift !== 0) {
+      this.headNode.rotationQuaternion = this.headNode.rotationQuaternion.multiply(
+        Quaternion.RotationAxis(this.headAxis, this.headLift * this.headUpSign),
+      );
+    }
     if (Math.abs(this.legYaw) < 1e-3) return;
     const total = -this.legYaw * this.twistSign;
     for (const b of this.twistBones) {

@@ -14,6 +14,7 @@ export interface AttackDef {
   stamina: number;
   recovery: number;
   heavy: boolean;
+  windup: number;
 }
 
 export interface ActiveAttack {
@@ -136,7 +137,7 @@ export class Fighter {
   startAttack(dir: Dir, heavy: boolean): boolean {
     if (!this.canAct) return false;
     const key = `${heavy ? 'heavy' : 'light'}_${dir}`;
-    const def = (COMBAT.attacks as Record<string, AttackDef>)[key];
+    const def = (COMBAT.attacks as unknown as Record<string, AttackDef>)[key];
     if (this.g.stamina < def.stamina * 0.5) {
       this.ev.message(this, 'Keine Ausdauer!');
       return false;
@@ -145,24 +146,36 @@ export class Fighter {
     this.spend(def.stamina);
     this.guard = dir;
     this.faceTarget();
-    const speed = def.speed * (this.exhausted ? 0.85 : 1);
-    const dur = this.g.animator.durationOf(def.anim, speed, def.range as [number, number] | undefined);
+    // Zwei Phasen: gut lesbares Ausholen (langsam), dann schneller Schwung bis zum Treffer
+    const range = def.range as [number, number] | undefined;
+    const base = this.g.animator.durationOf(def.anim, 1, range); // Länge bei Tempo 1
+    const swing = def.speed;
+    const windup = def.windup * (this.exhausted ? 1.15 : 1);
+    const swingFrac = Math.max(0, def.impact - 0.14);
+    const swingTime = ((def.impact - swingFrac) * base) / swing;
+    const slowTime = Math.max(0.05, windup - swingTime);
+    const slowSpeed = (swingFrac * base) / slowTime;
+    const total = windup + ((1 - def.impact) * base) / swing;
     const a: ActiveAttack = {
       key,
       def,
       dir,
       heavy,
       start: this.now,
-      impactAt: this.now + dur * def.impact,
-      end: this.now + dur,
+      impactAt: this.now + windup,
+      end: this.now + total,
       actionId: 0,
     };
     a.actionId = this.g.animator.play(def.anim, {
-      speed,
-      range: def.range as [number, number] | undefined,
-      fadeIn: 0.07,
-      fadeOut: 0.18,
-      events: [{ at: def.impact, fn: () => this.ev.impact(this, a) }],
+      speed: slowSpeed,
+      range,
+      duration: total,
+      fadeIn: 0.08,
+      fadeOut: 0.2,
+      events: [
+        { at: slowTime / total, fn: () => this.g.animator.setActionSpeed(a.actionId, swing) },
+        { at: windup / total, fn: () => this.ev.impact(this, a) },
+      ],
     });
     this.attack = a;
     this.mode = 'attack';

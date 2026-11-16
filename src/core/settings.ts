@@ -11,6 +11,7 @@ export interface Settings {
   showFps: boolean;
   installHintSeen: boolean;
   difficulty: number; // 0..4
+  blockAssist: 'off' | 'show' | 'auto';
 }
 
 const KEY = 'seg.settings.v1';
@@ -24,6 +25,7 @@ const DEFAULTS: Settings = {
   showFps: false,
   installHintSeen: false,
   difficulty: 1,
+  blockAssist: 'show',
 };
 
 // localStorage kann in manchen Kontexten werfen (privater Modus) -> immer abfangen

@@ -526,3 +526,42 @@ button.wide {
 #error-box[hidden] {
   display: none;
 }
+
+/* Zeitanzeige bis zum Treffer */
+.gw-ring {
+  position: absolute;
+  width: 50px;
+  height: 50px;
+  margin: -25px 0 0 -25px;
+  border: 3px solid #ff2a1a;
+  border-radius: 50%;
+  box-shadow: 0 0 8px rgba(255, 40, 20, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  will-change: transform;
+}
+.gw-ring[hidden] {
+  display: none;
+}
+.gw-ring span {
+  display: none;
+  font-size: 12px;
+  font-weight: bold;
+  color: #1a0f0a;
+  background: #ffe08a;
+  padding: 1px 5px;
+  border-radius: 6px;
+  transform: translateY(-34px);
+}
+.gw-ring.covered {
+  border-color: #6fe06f;
+  box-shadow: 0 0 8px rgba(100, 230, 100, 0.6);
+}
+.gw-ring.now {
+  border-color: #ffe08a;
+  box-shadow: 0 0 14px rgba(255, 224, 138, 0.9);
+}
+.gw-ring.now span {
+  display: block;
+}

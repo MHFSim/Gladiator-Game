@@ -29,7 +29,7 @@ export function gearMaterials(scene: Scene, env: Environment, team: Team, id: st
   const metal = (name: string, color: Color3, rough: number) => {
     const m = new PBRMaterial(name + id, scene);
     m.albedoColor = color;
-    m.albedoTexture = noiseAlbedo(scene, 'patina' + name, [255, 255, 255], 0.45, 6);
+    m.albedoTexture = noiseAlbedo(scene, 'patina' + name, [255, 255, 255], 0.28, 6);
     m.metallic = 0.62;
     m.roughness = rough + 0.08;
     m.reflectionTexture = env.probe.cubeTexture;
@@ -252,20 +252,18 @@ export function buildHelmet(scene: Scene, m: GearMaterials, s: number): Mesh {
   const sc = (p: [number, number][]) => p.map(([r, y]) => [r * s, y * s] as [number, number]);
   const gH = new GeoBuilder();
   lathe(gH, sc(dome), 0, Math.PI * 2, 32);
-  // Unterteil ohne Gesichtsfeld vorn (±55°)
-  const open = (55 * Math.PI) / 180;
+  // Offenes Gesicht: Unterteil und Krempe vorn ausgespart (±72°), damit man das Gesicht sieht
+  const open = (72 * Math.PI) / 180;
   lathe(gH, sc(lower), open, Math.PI * 2 - open, 26);
-  lathe(gH, sc(brim), 0, Math.PI * 2, 32);
+  lathe(gH, sc(brim), open * 0.85, Math.PI * 2 - open * 0.85, 28);
+  // Stirnband über dem Gesicht
+  lathe(gH, sc([
+    [0.166, 0.03],
+    [0.168, 0.0],
+  ]), -open, open, 12);
   const shell = finalize(gH.build('helmShell', scene), m.bronze);
   shell.material!.backFaceCulling = false;
 
-  const gG = new GeoBuilder();
-  lathe(gG, sc([
-    [0.168, 0.025],
-    [0.17, -0.05],
-    [0.162, -0.118],
-  ]), -open, open, 10);
-  const grille = finalize(gG.build('helmGrille', scene), m.grille);
 
   // Kamm: Flosse von vorn nach hinten über den Scheitel
   const gC = new GeoBuilder();
@@ -314,15 +312,15 @@ export function buildHelmet(scene: Scene, m: GearMaterials, s: number): Mesh {
     const [z, y] = top[i];
     const len = Math.hypot(z, y);
     const t = i / steps;
-    const h = (0.045 + Math.sin(t * Math.PI) * 0.05) * s;
-    const tuft = MeshBuilder.CreateSphere('tuft', { diameterX: 0.05 * s, diameterY: h * 2, diameterZ: 0.075 * s, segments: 8 }, scene);
+    const h = (0.03 + Math.sin(t * Math.PI) * 0.035) * s;
+    const tuft = MeshBuilder.CreateSphere('tuft', { diameterX: 0.04 * s, diameterY: h * 2, diameterZ: 0.06 * s, segments: 8 }, scene);
     tuft.position.set(0, y + (y / len) * h * 0.55, z + (z / len) * h * 0.55);
     tuft.rotation.x = Math.atan2(z, y);
     tufts.push(tuft);
   }
   const plume = Mesh.MergeMeshes(tufts, true, true) as Mesh;
   plume.material = m.plume;
-  const helmet = Mesh.MergeMeshes([shell, grille, crest, plume], true, true, undefined, false, true) as Mesh;
+  const helmet = Mesh.MergeMeshes([shell, crest, plume], true, true, undefined, false, true) as Mesh;
   helmet.name = 'helmet';
   helmet.receiveShadows = true;
   return helmet;

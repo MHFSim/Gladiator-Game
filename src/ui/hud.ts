@@ -19,6 +19,7 @@ export class Hud {
       onTime: (h: number) => void;
       onPause: (paused: boolean) => void;
       onDifficulty: (i: number) => void;
+      onAssist: (m: Settings['blockAssist']) => void;
       project: (world: Vector3) => { x: number; y: number } | null;
       rendererLabel: string;
       tierLabel: string;
@@ -35,6 +36,13 @@ export class Hud {
     const time = $<HTMLInputElement>('set-time');
     const battery = $<HTMLInputElement>('set-battery');
     const fps = $<HTMLInputElement>('set-fps');
+    const assist = $<HTMLSelectElement>('set-assist');
+    assist.value = settings.blockAssist;
+    assist.addEventListener('change', () => {
+      settings.blockAssist = assist.value as Settings['blockAssist'];
+      saveSettings(settings);
+      hooks.onAssist(settings.blockAssist);
+    });
     const diff = $<HTMLSelectElement>('set-difficulty');
     diff.value = String(settings.difficulty);
     diff.addEventListener('change', () => {
@@ -130,10 +138,10 @@ export class Hud {
     if (this.settings.scheme === 'gestures') {
       this.hint('Rechts Daumen schieben: Deckung · tippen: Schlag · halten: schwer', 5);
       window.setTimeout(() => this.hint('Schnell wischen: Parade · nach unten: Rolle · zwei Finger: Deckung brechen', 5), 5200);
-      window.setTimeout(() => this.hint('Blocken passiert von selbst, wenn deine Deckung (gold) zum Angriff (rot) passt', 5), 10400);
+      window.setTimeout(() => this.hint('Roter Ring = Angriff kommt · grün = du blockst · JETZT = parieren', 5), 10400);
     } else {
       this.hint('Pfeile: Deckung · Schlag tippen/halten · Parade im richtigen Moment', 5);
-      window.setTimeout(() => this.hint('Blocken passiert von selbst, wenn deine Deckung (gold) zum Angriff (rot) passt', 5), 5200);
+      window.setTimeout(() => this.hint('Roter Ring = Angriff kommt · grün = du blockst · JETZT = parieren', 5), 5200);
     }
   }
 
@@ -149,6 +157,7 @@ export class Hud {
     left: this.gw.querySelector<HTMLElement>('.gw-left')!,
     right: this.gw.querySelector<HTMLElement>('.gw-right')!,
   };
+  private ring = this.gw.querySelector<HTMLElement>('.gw-ring')!;
   private foeHp = $('foe-hp-fill');
   private foeSt = $('foe-st-fill');
   private dirButtons = {
@@ -176,6 +185,19 @@ export class Hud {
       el.classList.toggle('incoming', info.incoming === k);
       el.classList.toggle('heavy', info.incoming === k && info.heavy);
       this.dirButtons[k]?.classList.toggle('active', info.mine === k);
+    }
+    // Ring schrumpft bis zum Treffer: rot = falsche Deckung, grün = wird geblockt, gold = jetzt parieren
+    if (info.incoming && info.impactIn !== null) {
+      const pos = { top: [62, 13], left: [13, 62], right: [111, 62] }[info.incoming];
+      const k = Math.max(0, Math.min(1, info.impactIn / info.windup));
+      this.ring.hidden = false;
+      this.ring.style.left = `${pos[0]}px`;
+      this.ring.style.top = `${pos[1]}px`;
+      this.ring.style.transform = `scale(${0.8 + 1.8 * k})`;
+      this.ring.classList.toggle('covered', info.mine === info.incoming);
+      this.ring.classList.toggle('now', info.impactIn <= info.parryWindow);
+    } else {
+      this.ring.hidden = true;
     }
     this.foeHp.style.width = `${info.foeHp}%`;
     this.foeSt.style.width = `${info.foeSt}%`;
