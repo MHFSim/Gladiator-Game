@@ -1,5 +1,6 @@
 import type { MatchResult } from '../game/game';
-import { addXp, saveHero, winReward, xpForNext, POINTS_PER_LEVEL, type Hero } from '../game/hero';
+import { addXp, saveHero, winReward, xpForNext, MAX_ITEMS, POINTS_PER_LEVEL, type Hero } from '../game/hero';
+import { dismantleValue, mainText, RARITY, rollLoot, winDenare } from '../game/items';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -35,9 +36,22 @@ export class Results {
       const parts = [`Sieg +${rw.base}`];
       if (rw.parries) parts.push(`Paraden ×${Math.min(10, r.parries)} +${rw.parries}`);
       if (rw.flawless) parts.push(`Makellos ${r.wins}:0 +${rw.flawless}`);
-      lines.innerHTML = `${parts.join(' · ')}<br><b>+${gained} Erfahrung</b>`;
       levels = addXp(h, gained).levelsGained;
       h.wins++;
+      // Denare und Beute (nur für Siege)
+      const den = winDenare(r.foe.level, r.pvp);
+      h.denare += den;
+      const loot = rollLoot(r.foe.level, r.losses === 0);
+      h.items.push(loot);
+      if (h.items.length > MAX_ITEMS) {
+        const worn = new Set(Object.values(h.equipped));
+        const spare = h.items.filter((i) => !worn.has(i.id) && i !== loot).sort((a, b) => a.rarity - b.rarity || a.plus - b.plus)[0];
+        if (spare) {
+          h.denare += dismantleValue(spare);
+          h.items = h.items.filter((i) => i !== spare);
+        }
+      }
+      lines.innerHTML = `${parts.join(' · ')}<br><b>+${gained} Erfahrung</b> · <b>+${den} Denare</b><br><span class="loot">Beute: <span style="color:${RARITY[loot.rarity].color}">${loot.name}</span> (${RARITY[loot.rarity].name}, ${mainText(loot)})</span>`;
     } else {
       lines.innerHTML = 'Keine Erfahrung – nur Siege bringen Ruhm.';
       h.losses++;

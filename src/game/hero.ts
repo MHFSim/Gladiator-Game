@@ -3,6 +3,9 @@
  * Gespeichert im Browser, exportierbar als Datei.
  */
 
+import { CLASS_ORDER, type ClassId } from '../data/classes';
+import { applyItemStats, kitFor, SLOTS, starterItems, validItem, type Equipped, type Item, type Slot } from './items';
+
 export const ATTRS = ['vis', 'corpus', 'spiritus', 'celeritas', 'acies', 'gloria'] as const;
 export type AttrKey = (typeof ATTRS)[number];
 export type Attrs = Record<AttrKey, number>;
@@ -23,6 +26,11 @@ export const SOFT_CAP = 40;
 export interface Hero {
   v: 1;
   name: string;
+  cls: ClassId;
+  denare: number;
+  items: Item[];
+  /** angelegte Gegenstände (IDs) je Platz */
+  equipped: Partial<Record<Slot, string>>;
   level: number;
   xp: number; // Erfahrung innerhalb der aktuellen Stufe
   attrs: Attrs;
@@ -112,12 +120,57 @@ export function describe(key: AttrKey, a: Attrs): string {
     case 'acies':
       return `Kopftreffer ${pct(st.headMul - 1)}, leichte Schläge ${pct(st.lightMul - 1)}`;
     case 'gloria':
-      return `Gunst ${pct(st.gloriaMul - 1)} (Publikum folgt in Phase 3)`;
+      return `Gunst des Publikums ${pct(st.gloriaMul - 1)}`;
   }
 }
 
 export function newHero(): Hero {
-  return { v: 1, name: 'Spartacus', level: 1, xp: 0, attrs: zeroAttrs(), wins: 0, losses: 0, created: Date.now() };
+  const items = starterItems();
+  const equipped: Hero['equipped'] = {};
+  for (const it of items) equipped[it.slot] = it.id;
+  return { v: 1, name: 'Spartacus', cls: 'murmillo', denare: 60, items, equipped, level: 1, xp: 0, attrs: zeroAttrs(), wins: 0, losses: 0, created: Date.now() };
+}
+
+/** Ältere Spielstände um Klasse und Ausrüstung ergänzen, ungültige Teile entfernen */
+function upgrade(h: Hero): Hero {
+  const base = newHero();
+  const out = { ...base, ...h };
+  if (!CLASS_ORDER.includes(out.cls)) out.cls = 'murmillo';
+  if (!Array.isArray(out.items) || out.items.length === 0) {
+    out.items = base.items;
+    out.equipped = base.equipped;
+  }
+  out.items = out.items.filter(validItem).slice(0, MAX_ITEMS);
+  out.denare = Math.max(0, Math.floor(Number(out.denare) || 0));
+  const ids = new Set(out.items.map((i) => i.id));
+  const eq: Hero['equipped'] = {};
+  for (const s of SLOTS) {
+    const id = out.equipped?.[s];
+    if (id && ids.has(id) && out.items.find((i) => i.id === id)?.slot === s) eq[s] = id;
+  }
+  out.equipped = eq;
+  return out;
+}
+
+export const MAX_ITEMS = 40;
+
+export function equippedOf(h: Hero): Equipped {
+  const eq: Equipped = {};
+  for (const s of SLOTS) {
+    const id = h.equipped[s];
+    const it = id ? h.items.find((i) => i.id === id) : undefined;
+    if (it) eq[s] = it;
+  }
+  return eq;
+}
+
+/** Kampfwerte des Helden: Attribute + Ausrüstung */
+export function heroStats(h: Hero): Stats {
+  return applyItemStats(derive(h.attrs), equippedOf(h));
+}
+
+export function heroKit(h: Hero) {
+  return kitFor(h.cls, equippedOf(h));
 }
 
 function valid(h: unknown): h is Hero {
@@ -134,7 +187,7 @@ export function loadHero(): Hero {
     const raw = localStorage.getItem(KEY);
     if (raw) {
       const h = JSON.parse(raw);
-      if (valid(h)) return { ...newHero(), ...h };
+      if (valid(h)) return upgrade(h);
     }
   } catch {
     /* neuer Held */
@@ -171,7 +224,7 @@ export function importHero(text: string): Hero | string {
     const o = JSON.parse(text) as { held?: unknown; sig?: string };
     if (!valid(o.held)) return 'Die Datei enthält keinen gültigen Gladiator.';
     if (o.sig !== sign(JSON.stringify(o.held))) return 'Die Datei wurde verändert und kann nicht geladen werden.';
-    return { ...newHero(), ...o.held };
+    return upgrade(o.held);
   } catch {
     return 'Die Datei konnte nicht gelesen werden.';
   }

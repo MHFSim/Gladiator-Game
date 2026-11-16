@@ -1,14 +1,17 @@
-import { FreeCamera, Scene, Vector3 } from '@babylonjs/core';
+import { Color3, FreeCamera, Scene, StandardMaterial, TrailMesh, Vector3 } from '@babylonjs/core';
 import type { Arena } from '../arena/capua';
 import type { Gladiator } from '../gladiators/gladiator';
 import type { Action, TouchInput } from '../input/touch';
 import type { AnimCmd } from '../gladiators/gladiator';
 import type { Transport } from '../net/transport';
 import { AiController } from './ai';
-import { blockSideFor, COMBAT, Fighter, type ActiveAttack, type Dir, type FighterEvents } from './fighter';
+import { COMBAT, Fighter, type Kit, type ActiveAttack, type Dir, type FighterEvents } from './fighter';
 import { Fx } from './fx';
 import type { FighterInfo, Stats } from './hero';
 import type { Sound } from '../audio/sound';
+import { CLASSES, type ClassId } from '../data/classes';
+import { buildNet } from '../gladiators/gear';
+import { MeshBuilder, type Mesh } from '@babylonjs/core';
 import { Spectacle, type Deed, type Verdict } from './spectacle';
 
 const TAU = Math.PI * 2;
@@ -32,6 +35,8 @@ export interface HudHooks {
   vote(p: number | null, label?: string): void;
   thumb(v: 'missio' | 'iugula' | null): void;
   cinematic(on: boolean): void;
+  flash?(kind: 'hurt' | 'parry' | 'strike'): void;
+  special?(name: string | null, left: number, total: number): void;
 }
 
 export const WINS_NEEDED = 2;
@@ -53,6 +58,9 @@ export interface NetSetup {
   weather?: string;
   time?: number;
   arena?: 'capua' | 'colosseum';
+  cls?: [ClassId, ClassId];
+  kits?: [Kit, Kit];
+  tiers?: [[number, number, number, number, number], [number, number, number, number, number]];
 }
 
 export type Role = 'solo' | 'host' | 'guest';
@@ -65,11 +73,12 @@ interface NetFighter {
   sp: number;
   bw: boolean;
   m: string;
-  g: Dir;
+  bl: boolean;
   hp: number;
   st: number;
   ex: boolean;
   fv: number;
+  sc: number;
   at: { d: Dir; hv: boolean; ii: number; wu: number } | null;
 }
 
@@ -82,9 +91,9 @@ type NetAction = Exclude<Action, { type: 'roll' } | { type: 'lock' }> | { type: 
 
 export interface GuardInfo {
   anchor: Vector3; // Weltposition über dem Gegner
-  mine: Dir;
-  foe: Dir; // Seite aus Spielersicht
-  incoming: Dir | null; // aus Spielersicht
+  blocking: boolean;
+  foeBlocking: boolean;
+  incoming: boolean;
   heavy: boolean;
   impactIn: number | null; // Sekunden bis zum Treffer (für die Zeitanzeige)
   windup: number;
@@ -131,6 +140,7 @@ export class Game implements FighterEvents {
     this.player.target = this.foe;
     this.foe.target = this.player;
     this.ai = new AiController(this.foe, this.player, difficulty);
+    this.ai.special = () => this.special(this.foe);
     this.fx = new Fx(scene);
     this.spec = new Spectacle(() => this.arena.crowd, sound, {
       now: () => this.now,
@@ -162,6 +172,11 @@ export class Game implements FighterEvents {
   }
 
   readonly spec: Spectacle;
+  private trails = new Map<Fighter, TrailMesh>();
+  private trailMat: StandardMaterial | null = null;
+  private remoteAtk = new Map<Fighter, number>();
+  private fovKick = 0;
+  private baseFov = 0.8;
   private lockRange = COMBAT.lockRange;
 
   /** Andere Arena (nach dem Umbau der Szene) */
@@ -190,6 +205,8 @@ export class Game implements FighterEvents {
 
   private deed(d: Deed, f: Fighter): void {
     this.spec.note(d, f, f === this.player ? this.foe : this.player);
+    // Herausforderung: das Publikum jubelt doppelt
+    if (this.now < this.challengeUntil) this.spec.note(d, f, f === this.player ? this.foe : this.player);
   }
 
   private resetPositions(): void {
@@ -226,6 +243,10 @@ export class Game implements FighterEvents {
     this.player.info = setup.info[0];
     this.foe.stats = setup.stats[1];
     this.foe.info = setup.info[1];
+    if (setup.cls && setup.kits && setup.tiers) {
+      this.setClass(this.player, setup.cls[0], setup.kits[0], setup.tiers[0]);
+      this.setClass(this.foe, setup.cls[1], setup.kits[1], setup.tiers[1]);
+    }
     if (role === 'guest') {
       // Aus Sicht des Gasts ist er selbst der zweite Kämpfer: Rollen tauschen
       const me = this.foe;
@@ -251,8 +272,6 @@ export class Game implements FighterEvents {
       this.foe.g.animator.listener = (cmd) => net.send('anim', { w: 1, cmd });
       net.on('in', (d) => {
         this.remoteGuest = d as { p: [number, number]; h: number; ly: number; v: [number, number]; bw: boolean };
-        const g = (d as { g: Dir }).g;
-        if (g) this.foe.setGuard(g);
       });
       net.on('act', (d) => this.handleRemote(d as NetAction));
     }
@@ -374,11 +393,12 @@ export class Game implements FighterEvents {
       sp: f.mode === 'free' ? Math.hypot(f.vel.x, f.vel.z) : 0,
       bw: f.backwards,
       m: f.mode,
-      g: f.guard,
+      bl: f.blocking,
       hp: f.g.hp,
       st: f.g.stamina,
       ex: f.exhausted,
       fv: Math.round(f.favor),
+      sc: Math.max(0, Math.round((f.specialReadyAt - this.now) * 10) / 10),
       at: a && this.now < a.impactAt ? { d: a.dir, hv: a.heavy, ii: a.impactAt - this.now, wu: a.impactAt - a.start } : null,
     };
   }
@@ -386,26 +406,27 @@ export class Game implements FighterEvents {
   /** Gastgeber: Eingabe des Gasts ausführen */
   private handleRemote(a: NetAction): void {
     const f = this.foe;
-    if (f.mode === 'dead') return;
+    if (f.mode === 'dead' || this.spec.inCeremony) return;
     switch (a.type) {
       case 'light':
       case 'heavy':
-        f.startAttack(f.guard, a.type === 'heavy');
+        f.startAttack(a.type === 'heavy');
         break;
-      case 'guard':
-        f.setGuard(a.dir);
+      case 'block':
+        f.setBlock(a.on);
         break;
       case 'cheer':
         this.doCheer(f);
-        break;
-      case 'parry':
-        f.parry(a.dir ?? f.guard);
         break;
       case 'bash':
         f.bash();
         break;
       case 'roll':
+        f.setBlock(false);
         f.roll(new Vector3(a.v[0], 0, a.v[1]));
+        break;
+      case 'special':
+        this.special(f);
         break;
     }
   }
@@ -456,6 +477,23 @@ export class Game implements FighterEvents {
         this.resetMatch();
         this.onRematch?.();
         break;
+      case 'proj': {
+        const f3 = e.f as number[];
+        const t3 = e.t as number[];
+        this.throwProjectile(e.kind as 'javelin' | 'net', new Vector3(f3[0], f3[1], f3[2]), new Vector3(t3[0], t3[1], t3[2]), null);
+        break;
+      }
+      case 'net': {
+        const pp = e.p as number[];
+        this.netOn(new Vector3(pp[0], 0, pp[1]), e.d as number);
+        break;
+      }
+      case 'flash':
+        if (e.f !== 'none') {
+          this.hud.flash?.(e.f as 'hurt' | 'parry' | 'strike');
+          this.fovKick = 0.06;
+        }
+        break;
       case 'pool': {
         const pp = e.p as number[];
         this.fx.pool(new Vector3(pp[0], 0, pp[1]));
@@ -493,6 +531,7 @@ export class Game implements FighterEvents {
     p.g.hp = me.hp;
     p.g.stamina = me.st;
     p.favor = me.fv ?? 50;
+    p.specialReadyAt = this.now + (me.sc ?? 0);
     if (this.spec.inCeremony) {
       // Während der Zeremonie bestimmt der Gastgeber auch die eigene Figur
       p.pos.x = me.p[0];
@@ -506,8 +545,9 @@ export class Game implements FighterEvents {
     f.g.stamina = host.st;
     f.favor = host.fv ?? 50;
     f.mode = host.m as Fighter['mode'];
-    f.guard = host.g;
     this.foeAttackLocal = host.at ? { d: host.at.d, hv: host.at.hv, impactAt: this.now + host.at.ii, wu: host.at.wu } : null;
+    if (host.at) this.remoteAtk.set(f, this.now + host.at.ii);
+    if (me.at) this.remoteAtk.set(p, this.now + me.at.ii);
   }
 
   /** Gast: Gegner zwischen den letzten zwei Schnappschüssen glätten */
@@ -532,8 +572,7 @@ export class Game implements FighterEvents {
     if (!this.net) return;
     const p = this.player;
     switch (a.type) {
-      case 'guard':
-        p.setGuard(a.dir);
+      case 'block':
         this.net.send('act', a);
         break;
       case 'roll': {
@@ -545,7 +584,7 @@ export class Game implements FighterEvents {
         else if (a.dir === 'forward') dir = fw;
         else if (a.dir === 'back' || dir.length() < 0.25) dir = fw.scale(-1);
         dir.normalize();
-        if (p.mode !== 'free' || p.exhausted) return;
+        if ((p.mode !== 'free' && p.mode !== 'block') || p.exhausted) return;
         // Ausweichen sofort selbst bewegen, der Gastgeber prüft Unverwundbarkeit
         const dur = p.g.animator.durationOf('roll', COMBAT.roll.speed);
         p.mode = 'roll';
@@ -556,13 +595,11 @@ export class Game implements FighterEvents {
         this.net.send('act', { type: 'roll', v: [dir.x, dir.z] });
         break;
       }
-      case 'parry':
-        this.net.send('act', { type: 'parry', dir: a.dir ?? p.guard });
-        break;
       case 'light':
       case 'heavy':
       case 'bash':
       case 'cheer':
+      case 'special':
         this.net.send('act', a);
         break;
       case 'lock':
@@ -607,11 +644,13 @@ export class Game implements FighterEvents {
     if (this.inTimer >= 1 / 30 && this.net) {
       this.inTimer = 0;
       const p = this.player;
-      this.net.send('in', { p: [p.pos.x, p.pos.z], h: p.g.heading, ly: p.g.legYaw, v: [p.vel.x, p.vel.z], bw: p.backwards, g: p.guard });
+      this.net.send('in', { p: [p.pos.x, p.pos.z], h: p.g.heading, ly: p.g.legYaw, v: [p.vel.x, p.vel.z], bw: p.backwards });
     }
     this.fx.update(dt);
+    this.updateProjectiles(dt);
     this.updateCamera(dt);
     this.hud.favor(this.player.favor, this.foe.favor);
+    this.updateSpecialHud();
     // HUD: Angriff des Gegners aus dem Schnappschuss
     this.hud.setBars(this.pct(this.player, 'hp'), this.pct(this.player, 'st'), this.player.exhausted);
     const fa = this.foeAttackLocal;
@@ -619,9 +658,9 @@ export class Game implements FighterEvents {
     else
       this.hud.guard({
         anchor: this.foe.pos.add(new Vector3(0, this.foe.g.chestHeight - 0.05, 0)),
-        mine: this.player.guard,
-        foe: blockSideFor(this.foe.guard),
-        incoming: fa && this.now < fa.impactAt ? blockSideFor(fa.d) : null,
+        blocking: this.player.blocking,
+        foeBlocking: this.foe.blocking,
+        incoming: !!fa && this.now < fa.impactAt,
         heavy: !!fa?.hv,
         impactIn: fa && this.now < fa.impactAt && this.blockAssist !== 'off' ? fa.impactAt - this.now : null,
         windup: fa?.wu ?? 1,
@@ -660,21 +699,10 @@ export class Game implements FighterEvents {
 
   attackStart(f: Fighter, a: ActiveAttack): void {
     if (f === this.player && this.role === 'solo') this.ai.onFoeAttack(a, this.now);
-    if (f === this.foe && this.blockAssist === 'auto') this.autoGuard = { dir: blockSideFor(a.dir), at: this.now + 0.22 };
     const wait = Math.max(0, a.impactAt - this.now - 0.16);
     window.setTimeout(() => {
       if (f.attack === a) this.sfx('whoosh', a.heavy);
     }, wait * 1000);
-  }
-
-  feint(f: Fighter): void {
-    this.deed('feint', f);
-    if (f === this.player) {
-      this.ai.onFoeFeint();
-      this.float(this.chest(f), 'Finte', 'good');
-    } else {
-      this.float(this.chest(f), 'Finte!', 'bad');
-    }
   }
 
   message(f: Fighter, text: string): void {
@@ -697,7 +725,6 @@ export class Game implements FighterEvents {
   }
 
   private grace: { A: Fighter; a: ActiveAttack; at: number }[] = [];
-  private autoGuard: { dir: Dir; at: number } | null = null;
   blockAssist: 'off' | 'show' | 'auto' = 'show';
 
   /** Parade, Block oder Treffer. Wer zu spät blockt, bekommt eine kurze Gnadenfrist. */
@@ -705,7 +732,10 @@ export class Game implements FighterEvents {
     const D = A === this.player ? this.foe : this.player;
     if (A.attack !== a || A.mode !== 'attack' || D.mode === 'dead') return;
     const dist = Vector3.Distance(A.pos, D.pos);
-    if (dist > COMBAT.reach || !this.inFront(A, D, COMBAT.maxAngle)) return;
+    if (dist > A.kit.reach || !this.inFront(A, D, COMBAT.maxAngle)) {
+      if (A === this.player) this.sfx('whoosh', false);
+      return;
+    }
     const contact = Vector3.Lerp(A.pos, D.pos, 0.65);
     contact.y = D.g.chestHeight + (a.dir === 'top' ? 0.25 : 0);
     const push = D.pos.subtract(A.pos).normalize();
@@ -716,55 +746,69 @@ export class Game implements FighterEvents {
       this.deed('dodge', D);
       return;
     }
-    const need = blockSideFor(a.dir);
+    let facing = this.inFront(D, A, COMBAT.blockAngle);
+    // Hakenschlag: greift um den Schild herum (Parade bleibt möglich)
+    if (this.now < A.hookUntil) {
+      A.hookUntil = 0;
+      a.hooked = true;
+    }
+    const hooked = !!a.hooked;
+    const parryWin = COMBAT.parryWindow + D.stats.parryBonus;
 
-    // Parade
-    if (D.mode === 'parry' && this.now <= D.parryUntil && D.parryDir === need) {
+    // Parade: Block frisch gedrückt, kurz bevor der Schlag ankommt
+    if (D.blocking && facing && this.now - D.blockStart <= parryWin) {
       D.parrySucceeded();
       A.drain(COMBAT.parried.stamina);
       A.stagger(COMBAT.parried.staggerTime, 'knockback', 1.1);
-      this.impulse(A, push.scale(-2.5));
+      this.impulse(A, push.scale(-2.8));
       this.sparks(contact);
       this.sparks(contact);
-      this.setHitStop(0.14);
-      this.setShake(0.3);
+      this.setHitStop(0.16);
+      this.setShake(0.35);
+      this.flash(D === this.player ? 'parry' : 'none');
       this.float(this.chest(D), 'Parade!', youHit ? 'bad' : 'good');
+      if (D === this.player) this.hud.hint('Gegenangriff!', 0.8);
       this.sfx('clash', true);
       this.deed('parry', D);
       return;
     }
 
+    if (hooked && D.blocking && facing) {
+      facing = false;
+      this.float(this.chest(D), 'Um den Schild!', youHit ? 'big' : 'bad');
+    }
     // Block
-    const canBlock = (D.mode === 'free' || D.mode === 'parry') && this.now >= D.guardBrokenUntil;
-    if (canBlock && D.guard === need) {
-      if (D.exhausted) {
-        // Erschöpft: die Deckung bricht unter dem Schlag
-        const dmg = Math.round(a.def.damage * 0.5 * this.mul(A, a, false));
+    if (D.blocking && facing) {
+      const mul = this.mul(A, a, false);
+      if (a.heavy || D.exhausted) {
+        // Wuchtschlag (oder erschöpft): die Deckung bricht
+        const chip = Math.round(a.def.damage * mul * COMBAT.heavyChip);
         this.sparks(contact);
-        this.float(this.chest(D), 'Deckung bricht', youHit ? 'good' : 'bad');
-        this.setHitStop(0.08);
+        this.float(this.chest(D), 'Deckung bricht!', youHit ? 'big' : 'bad');
+        this.setHitStop(0.12);
+        this.setShake(0.35);
         this.sfx('block', true);
         this.deed('heavy', A);
-        if (D.takeHit(dmg, 'hit_chest', a.heavy)) return this.kill(D, push);
-        D.stagger(0.8, 'shield_break');
-        D.guardBrokenUntil = this.now + 1.0;
+        D.drain(COMBAT.guardBreak.stamina);
+        if (D.takeHit(chip, 'hit_chest', true)) return this.kill(D, push);
+        D.guardBreak(COMBAT.guardBreak.stagger);
+        this.impulse(D, push.scale(2.2));
         return;
       }
       this.sparks(contact);
-      D.blockReact(a.def.damage * this.mul(A, a, false) * COMBAT.blockStaminaFactor * (a.heavy ? 1.4 : 1));
-      if (a.heavy) D.g.hp = Math.max(1, D.g.hp - a.def.damage * this.mul(A, a, false) * COMBAT.heavyChip);
-      this.impulse(D, push.scale(a.heavy ? 1.6 : 0.8));
-      this.setShake(a.heavy ? 0.18 : 0.1);
-      this.setHitStop(a.heavy ? 0.07 : 0.04);
+      D.blockReact(a.def.damage * mul * COMBAT.blockStaminaFactor, false);
+      this.impulse(D, push.scale(0.9));
+      this.setShake(0.12);
+      this.setHitStop(0.05);
       this.float(this.chest(D), 'Geblockt', youHit ? '' : 'good');
-      if (a.dir === 'top' && Math.random() < 0.5) this.sfx('clash');
-      else this.sfx('block', a.heavy);
+      if (D.kit.hasShield && Math.random() < 0.7) this.sfx('block', false);
+      else this.sfx('clash');
       this.deed('block', D);
       return;
     }
 
-    // Knapp zu spät? Kurz warten, ob die Deckung noch rechtzeitig wechselt
-    if (!afterGrace && (D.mode === 'free' || D.mode === 'parry')) {
+    // Knapp zu spät? Kurz warten, ob der Block noch rechtzeitig kommt
+    if (!afterGrace && (D.mode === 'free' || D.mode === 'block')) {
       this.grace.push({ A, a, at: this.now + COMBAT.blockGrace });
       return;
     }
@@ -777,28 +821,30 @@ export class Game implements FighterEvents {
       else if (r < 0.28) zoneKey = 'leg';
     }
     const zone = COMBAT.zones[zoneKey] as { name: string; mult: number; anim: string; debuff?: string };
-    let armor = 0;
-    if (zoneKey === 'top') armor = COMBAT.armor.helmet;
-    // Angriff von links trifft die rechte Seite des Gegners (Manica), von rechts die linke (Beinschiene)
-    if (zoneKey === 'arm' && a.dir === 'left') armor = COMBAT.armor.manica;
-    if (zoneKey === 'leg' && a.dir === 'right') armor = COMBAT.armor.greave;
+    const ar = D.kit.armor;
+    const armor = zoneKey === 'top' ? ar.head : zoneKey === 'arm' ? ar.arm : zoneKey === 'leg' ? ar.leg : ar.body;
     const weak = this.now < A.weakUntil ? 0.75 : 1;
     const dmg = Math.round(a.def.damage * this.mul(A, a, zoneKey === 'top') * zone.mult * (1 - armor) * weak);
     if (zone.debuff === 'weak') D.weakUntil = this.now + 3;
     if (zone.debuff === 'slow') D.slowUntil = this.now + 3;
+    const big = a.heavy || a.combo === 3 || a.power > 1.2;
     this.blood(contact, push);
-    this.setShake(a.heavy ? 0.4 : 0.22);
-    this.setHitStop(a.heavy ? 0.1 : 0.06);
-    this.float(this.chest(D), `${zone.name} −${dmg}`, youHit ? (a.heavy ? 'big' : 'good') : 'bad');
-    this.sfx('hit', a.heavy);
+    if (big) this.blood(contact.add(new Vector3(0, 0.15, 0)), push);
+    this.setShake(big ? 0.5 : 0.26);
+    this.setHitStop(big ? 0.13 : 0.07);
+    if (D === this.player) this.flash('hurt');
+    else this.flash(big ? 'strike' : 'none');
+    this.float(this.chest(D), `${zone.name} −${dmg}`, youHit ? (big ? 'big' : 'good') : 'bad');
+    this.sfx('hit', big);
     this.deed(zoneKey === 'top' ? 'head' : a.heavy ? 'heavy' : 'hit', A);
-    if (D.takeHit(dmg, zone.anim, a.heavy)) return this.kill(D, push);
-    this.impulse(D, push.scale(a.heavy ? 2.6 : 1.4));
+    if (D.takeHit(dmg, big ? 'knockback' : zone.anim, big)) return this.kill(D, push);
+    this.impulse(D, push.scale(big ? 3.2 : 1.6));
   }
 
   /** Schadensfaktor aus den Attributen des Angreifers */
   private mul(A: Fighter, a: ActiveAttack, head: boolean): number {
-    return (a.heavy ? A.stats.heavyMul : A.stats.lightMul) * (head ? A.stats.headMul : 1);
+    const ch = this.now < this.challengeUntil ? 1.3 : 1;
+    return (a.heavy ? A.stats.heavyMul : A.stats.lightMul) * (head ? A.stats.headMul : 1) * a.power * ch;
   }
 
   bashImpact(A: Fighter): void {
@@ -811,7 +857,7 @@ export class Game implements FighterEvents {
       if (youBash) this.float(this.chest(D), 'Daneben', 'bad');
       return;
     }
-    if (D.mode === 'attack' && D.attack && this.now < D.attack.impactAt) {
+    if (D.mode === 'attack' && D.attack && this.now < D.attack.impactAt && !D.blocking) {
       if (youBash) this.float(this.chest(D), 'Zu langsam', 'bad');
       return;
     }
@@ -821,13 +867,14 @@ export class Game implements FighterEvents {
       return;
     }
     const push = D.pos.subtract(A.pos).normalize();
-    D.stagger(COMBAT.bash.staggerTime, 'shield_break');
-    D.guardBrokenUntil = this.now + COMBAT.bash.staggerTime + 0.25;
-    D.drain(COMBAT.bash.targetStamina * A.stats.bashMul);
-    this.impulse(D, push.scale(4));
-    this.setShake(0.25);
-    this.setHitStop(0.06);
-    this.float(this.chest(D), 'Deckung gebrochen!', youBash ? 'good' : 'bad');
+    const wasBlocking = D.blocking;
+    // Gegen Blocker besonders stark: Deckung bricht
+    D.guardBreak(wasBlocking ? COMBAT.bash.staggerTime : COMBAT.bash.staggerTime * 0.55);
+    D.drain(COMBAT.bash.targetStamina * A.stats.bashMul * (wasBlocking ? 1.3 : 0.7));
+    this.impulse(D, push.scale(wasBlocking ? 4.2 : 3));
+    this.setShake(0.3);
+    this.setHitStop(0.08);
+    this.float(this.chest(D), wasBlocking ? 'Deckung gebrochen!' : 'Gestoßen', youBash ? 'good' : 'bad');
     this.sfx('block', true);
     this.deed('bash', A);
   }
@@ -857,6 +904,233 @@ export class Game implements FighterEvents {
       this.slowmo = 1.4;
       this.spec.start(D === this.foe ? this.player : this.foe, D);
     } else window.setTimeout(() => this.newRound(), 4500);
+  }
+
+  private challengeUntil = 0;
+  private timers: { at: number; fn: () => void }[] = [];
+
+  /** In Spielzeit verzögert ausführen (läuft mit Zeitlupe und Pause) */
+  private later(sec: number, fn: () => void): void {
+    this.timers.push({ at: this.now + sec, fn });
+  }
+
+  private runTimers(): void {
+    if (!this.timers.length) return;
+    const due = this.timers.filter((t) => t.at <= this.now);
+    this.timers = this.timers.filter((t) => t.at > this.now);
+    for (const t of due) t.fn();
+  }
+  private projectiles: { mesh: Mesh; from: Vector3; to: Vector3; t: number; dur: number; kind: 'javelin' | 'net'; owner: Fighter | null; spin: number }[] = [];
+
+  /** Klasse eines Kämpfers setzen: Werte, Aussehen, Sonderfähigkeit */
+  setClass(f: Fighter, cls: ClassId, kit = CLASSES[cls].kit, tiers: [number, number, number, number, number] = [1, 1, 1, 1, 1]): void {
+    f.cls = cls;
+    f.kit = kit;
+    f.g.equip({ cls, tiers });
+    this.ai.specialKind = CLASSES[this.foe.cls].special.id;
+  }
+
+  /** Sonderfähigkeit der Klasse */
+  special(f: Fighter): void {
+    if (this.role === 'guest' && f === this.player) return;
+    if (!f.canAct || f.mode === 'dead' || this.now < f.specialReadyAt || this.spec.inCeremony) return;
+    const def = CLASSES[f.cls].special;
+    const D = f === this.player ? this.foe : this.player;
+    if (f.mode === 'block') f.setBlock(false);
+    f.specialReadyAt = this.now + def.cooldown;
+    const mine = f === this.player;
+    this.float(this.chest(f), def.name + '!', mine ? 'good' : 'bad');
+    switch (def.id) {
+      case 'ram': {
+        f.faceTarget();
+        const fw = new Vector3(Math.sin(f.g.heading), 0, Math.cos(f.g.heading));
+        f.interruptAttack();
+        f.mode = 'special';
+        f.modeUntil = this.now + 0.85;
+        f.dashDir = fw;
+        f.dashUntil = this.now + 0.55;
+        f.lastAction = f.g.animator.play('shield_dash', { speed: 1.2, fadeIn: 0.06 });
+        let done = false;
+        const check = () => {
+          if (done || f.mode !== 'special') return;
+          const dist = Vector3.Distance(f.pos, D.pos);
+          if (dist < 1.6 && this.inFront(f, D, 1.1) && D.mode !== 'dead' && this.now >= D.invulnUntil) {
+            done = true;
+            f.dashUntil = 0;
+            const push = D.pos.subtract(f.pos).normalize();
+            D.guardBreak(1.0);
+            D.drain(25);
+            this.impulse(D, push.scale(5));
+            this.setShake(0.5);
+            this.setHitStop(0.12);
+            this.flash(D === this.player ? 'hurt' : 'strike');
+            this.sfx('block', true);
+            this.float(this.chest(D), 'Umgerannt!', mine ? 'big' : 'bad');
+            this.deed('bash', f);
+          }
+        };
+        for (let i = 1; i <= 7; i++) this.later(i * 0.085, check);
+        break;
+      }
+      case 'pursuit':
+        f.buffUntil = this.now + 4;
+        this.spec.kick(0.3);
+        break;
+      case 'hook':
+        f.hookUntil = this.now + 5;
+        if (mine) this.hud.hint('Hakenschlag bereit: der nächste Schlag geht um den Schild', 2);
+        break;
+      case 'javelin':
+      case 'net': {
+        f.faceTarget();
+        f.interruptAttack();
+        f.mode = 'special';
+        f.modeUntil = this.now + 0.9;
+        f.lastAction = f.g.animator.play('throw', { speed: 1.25, fadeIn: 0.06 });
+        this.later(0.33, () => {
+          if (f.mode === 'dead') return;
+          const from = f.pos.add(new Vector3(0, 1.6, 0));
+          const to = D.pos.add(new Vector3(0, def.id === 'net' ? 1.0 : 1.25, 0));
+          this.throwProjectile(def.id as 'javelin' | 'net', from, to, f);
+        });
+        break;
+      }
+      case 'challenge':
+        this.challengeUntil = this.now + 6;
+        this.spec.kick(0.8);
+        this.arena.crowd.wave();
+        if (mine || D === this.player) this.hud.hint('Herausforderung! 6 Sekunden mehr Schaden für beide', 2.2);
+        break;
+    }
+  }
+
+  /** Wurfspeer oder Netz fliegt (auch beim Gast sichtbar) */
+  private throwProjectile(kind: 'javelin' | 'net', from: Vector3, to: Vector3, owner: Fighter | null): void {
+    const dist = Vector3.Distance(from, to);
+    const dur = Math.max(0.25, dist / (kind === 'net' ? 13 : 22));
+    let mesh: Mesh;
+    if (kind === 'net') {
+      mesh = buildNet(this.scene, this.player.g.mat);
+      mesh.scaling.setAll(0.4);
+    } else {
+      mesh = MeshBuilder.CreateCylinder('javelin', { height: 1.6, diameterTop: 0.01, diameterBottom: 0.03, tessellation: 6 }, this.scene);
+      mesh.material = this.player.g.mat.wood;
+    }
+    mesh.position.copyFrom(from);
+    this.projectiles.push({ mesh, from, to, t: 0, dur, kind, owner, spin: 0 });
+    this.sfx('whoosh', true);
+    if (owner) this.send('ev', { k: 'proj', kind, f: [from.x, from.y, from.z], t: [to.x, to.y, to.z] });
+  }
+
+  private updateProjectiles(dt: number): void {
+    for (const p of this.projectiles) {
+      p.t += dt;
+      const k = Math.min(1, p.t / p.dur);
+      const pos = Vector3.Lerp(p.from, p.to, k);
+      pos.y += Math.sin(k * Math.PI) * (p.kind === 'net' ? 0.8 : 0.5);
+      if (p.kind === 'net') {
+        p.mesh.scaling.setAll(0.4 + k * 0.8);
+        p.mesh.rotation.x = Math.PI / 2 - 0.4;
+        p.mesh.rotation.y += dt * 8;
+      } else {
+        const dir = p.to.subtract(p.from).normalize();
+        p.mesh.rotation.x = Math.PI / 2 - 0.2 + k * 0.4;
+        p.mesh.rotation.y = Math.atan2(dir.x, dir.z);
+      }
+      p.mesh.position.copyFrom(pos);
+      if (k >= 1) this.projectileArrives(p);
+    }
+    this.projectiles = this.projectiles.filter((p) => p.t < p.dur);
+  }
+
+  private projectileArrives(p: (typeof this.projectiles)[number]): void {
+    window.setTimeout(() => p.mesh.dispose(), p.kind === 'net' ? 100 : 400);
+    const A = p.owner;
+    if (!A || this.role === 'guest') return;
+    const D = A === this.player ? this.foe : this.player;
+    const mine = A === this.player;
+    if (D.mode === 'dead') return;
+    if (Vector3.Distance(D.pos.add(new Vector3(0, 1.1, 0)), p.to) > 1.4 || this.now < D.invulnUntil) {
+      this.float(this.chest(D), 'Daneben', mine ? 'bad' : 'good');
+      this.deed('dodge', D);
+      return;
+    }
+    if (p.kind === 'javelin') {
+      if (D.blocking && this.inFront(D, A, COMBAT.blockAngle)) {
+        D.blockReact(14, true);
+        this.sparks(this.chest(D));
+        this.sfx('block', true);
+        this.float(this.chest(D), 'Abgewehrt', mine ? '' : 'good');
+        return;
+      }
+      const dmg = Math.round(18 * A.kit.damage * A.stats.lightMul * (1 - D.kit.armor.body));
+      this.blood(this.chest(D), D.pos.subtract(A.pos).normalize());
+      this.sfx('hit', true);
+      this.flash(D === this.player ? 'hurt' : 'strike');
+      this.float(this.chest(D), `Speer −${dmg}`, mine ? 'big' : 'bad');
+      this.deed('heavy', A);
+      if (D.takeHit(dmg, 'hit_chest', true)) this.kill(D, D.pos.subtract(A.pos).normalize());
+      return;
+    }
+    // Netz
+    if (D.cls === 'secutor' && Math.random() < 0.4) {
+      this.float(this.chest(D), 'Netz rutscht ab', mine ? 'bad' : 'good');
+      return;
+    }
+    D.setBlock(false);
+    D.stagger(1.6, 'hit_chest', 0.5);
+    D.guardBrokenUntil = this.now + 1.8;
+    this.float(this.chest(D), 'Gefangen!', mine ? 'big' : 'bad');
+    this.deed('heavy', A);
+    this.spec.kick(0.6);
+    this.netOn(D.pos.clone(), 1.6);
+    this.send('ev', { k: 'net', p: [D.pos.x, D.pos.z], d: 1.6 });
+  }
+
+  /** Netz liegt über dem Gefangenen */
+  private netOn(at: Vector3, sec: number): void {
+    const n = buildNet(this.scene, this.player.g.mat);
+    n.position.set(at.x, 1.0, at.z);
+    n.rotation.x = Math.PI / 2 - 0.25;
+    n.scaling.setAll(0.75);
+    window.setTimeout(() => n.dispose(), sec * 1000);
+  }
+
+  /** Bildschirm-Rückmeldung */
+  private flash(kind: 'hurt' | 'parry' | 'strike' | 'none'): void {
+    if (kind === 'none') return;
+    this.hud.flash?.(kind);
+    this.fovKick = Math.max(this.fovKick, kind === 'strike' ? 0.09 : kind === 'hurt' ? 0.06 : 0.04);
+    this.send('ev', { k: 'flash', f: kind === 'hurt' ? 'strike' : kind === 'strike' ? 'hurt' : kind });
+  }
+
+  /** Waffenspur nur im Schwung */
+  private updateTrails(): void {
+    for (const f of [this.player, this.foe]) {
+      const tip = f.g.tip;
+      if (!tip) continue;
+      let t = this.trails.get(f);
+      if (!t) {
+        if (!this.trailMat) {
+          const m = new StandardMaterial('trailMat', this.scene);
+          m.emissiveColor = new Color3(1, 0.93, 0.8);
+          m.diffuseColor = Color3.Black();
+          m.specularColor = Color3.Black();
+          m.disableLighting = true;
+          m.alpha = 0.22;
+          m.backFaceCulling = false;
+          this.trailMat = m;
+        }
+        t = new TrailMesh('trail', tip, this.scene, 0.05, 16, true);
+        t.material = this.trailMat;
+        t.isPickable = false;
+        this.trails.set(f, t);
+      }
+      let impactAt: number | undefined;
+      if (this.role === 'guest') impactAt = this.remoteAtk.get(f);
+      else if (f.mode === 'attack' && f.attack) impactAt = f.attack.impactAt;
+      t.isVisible = impactAt !== undefined && this.now > impactAt - 0.22 && this.now < impactAt + 0.12;
+    }
   }
 
   /** Todesstoß nach „Iugula!“ */
@@ -938,19 +1212,17 @@ export class Game implements FighterEvents {
     if (p.mode === 'dead') return;
     switch (a.type) {
       case 'light':
-      case 'heavy': {
-        const dir: Dir = this.locked ? p.guard : 'top';
-        p.startAttack(dir, a.type === 'heavy');
+      case 'heavy':
+        p.startAttack(a.type === 'heavy');
         break;
-      }
-      case 'guard':
-        p.setGuard(a.dir);
-        break;
-      case 'parry':
-        p.parry(a.dir ?? p.guard);
+      case 'block':
+        p.setBlock(a.on);
         break;
       case 'bash':
         p.bash();
+        break;
+      case 'special':
+        this.special(p);
         break;
       case 'roll': {
         let dir = this.stickWorld();
@@ -960,6 +1232,7 @@ export class Game implements FighterEvents {
         else if (a.dir === 'right') dir = right;
         else if (a.dir === 'forward') dir = fw;
         else if (a.dir === 'back' || dir.length() < 0.25) dir = fw.scale(-1);
+        p.setBlock(false);
         p.roll(dir);
         break;
       }
@@ -1013,11 +1286,6 @@ export class Game implements FighterEvents {
     const due = this.grace.filter((g) => g.at <= this.now);
     this.grace = this.grace.filter((g) => g.at > this.now);
     for (const g of due) this.resolve(g.A, g.a, true);
-    // Block-Hilfe: Deckung automatisch auf die Angriffsseite
-    if (this.autoGuard && this.now >= this.autoGuard.at) {
-      if (this.player.mode === 'free') this.player.setGuard(this.autoGuard.dir);
-      this.autoGuard = null;
-    }
     if (!freeze && this.role === 'solo' && !ceremony) this.aiMove = this.ai.update(this.now);
     this.spec.update(dt);
 
@@ -1033,6 +1301,8 @@ export class Game implements FighterEvents {
     }
     this.arena.update(dt, daylight);
     this.fx.update(dt);
+    this.runTimers();
+    this.updateProjectiles(dt);
     if (!freeze) this.updateCamera(dt);
     this.updateHud();
   }
@@ -1041,8 +1311,15 @@ export class Game implements FighterEvents {
     return k === 'hp' ? (100 * f.g.hp) / f.stats.hpMax : (100 * f.g.stamina) / f.stats.staminaMax;
   }
 
+  private updateSpecialHud(): void {
+    const p = this.player;
+    const def = CLASSES[p.cls].special;
+    this.hud.special?.(def.name, Math.max(0, p.specialReadyAt - this.now), def.cooldown);
+  }
+
   private updateHud(): void {
     const p = this.player;
+    this.updateSpecialHud();
     this.hud.favor(p.favor, this.foe.favor);
     this.hud.setBars(this.pct(p, 'hp'), this.pct(p, 'st'), p.exhausted);
     if (!this.locked || this.foe.mode === 'dead') {
@@ -1052,9 +1329,9 @@ export class Game implements FighterEvents {
     const fa = this.foe.attack;
     this.hud.guard({
       anchor: this.foe.pos.add(new Vector3(0, this.foe.g.chestHeight - 0.05, 0)),
-      mine: p.guard,
-      foe: blockSideFor(this.foe.guard),
-      incoming: fa && this.now < fa.impactAt ? blockSideFor(fa.dir) : null,
+      blocking: p.blocking,
+      foeBlocking: this.foe.blocking,
+      incoming: !!fa && this.now < fa.impactAt,
       heavy: !!fa?.heavy,
       impactIn: fa && this.now < fa.impactAt && this.blockAssist !== 'off' ? fa.impactAt - this.now : null,
       windup: fa ? fa.impactAt - fa.start : 1,
@@ -1067,7 +1344,8 @@ export class Game implements FighterEvents {
   /* ---------- Bewegung ---------- */
 
   private maxSpeed(f: Fighter, locked: boolean): number {
-    let s = (locked ? 2.6 : 6.0) * f.stats.moveMul;
+    let s = (locked ? 2.8 : 6.0) * f.stats.moveMul * f.kit.move;
+    if (this.now < f.buffUntil) s *= 1.4;
     if (this.now < f.slowUntil) s *= 0.6;
     if (f.exhausted) s *= 0.7;
     return s;
@@ -1079,6 +1357,8 @@ export class Game implements FighterEvents {
     let dir = wish.length() > 1e-3 ? wish.normalize() : Vector3.Zero();
     if (f.mode === 'free') {
       target = mag * this.maxSpeed(f, locked);
+    } else if (f.mode === 'block') {
+      target = mag * this.maxSpeed(f, locked) * COMBAT.blockMove;
     } else if (f.mode === 'attack' && f.attack && f.target) {
       // Beim Ausholen leicht auf den Gegner zugehen, damit der Schlag sitzt
       const d = f.target.pos.subtract(f.pos);
@@ -1103,7 +1383,9 @@ export class Game implements FighterEvents {
     }
     if (f.mode === 'roll' && this.now < f.rollUntil) {
       f.vel.copyFrom(f.rollDir.scale(f.rollSpeed));
-    } else if (f.mode === 'hit' || f.mode === 'stagger' || f.mode === 'dead' || f.mode === 'roll' || f.mode === 'bash' || f.mode === 'parry') {
+    } else if (f.mode === 'special' && this.now < f.dashUntil) {
+      f.vel.copyFrom(f.dashDir.scale(6.5));
+    } else if (f.mode === 'hit' || f.mode === 'stagger' || f.mode === 'dead' || f.mode === 'roll' || f.mode === 'bash' || f.mode === 'special' || (f.mode === 'block' && COMBAT.blockMove === 0)) {
       f.vel.scaleInPlace(Math.max(0, 1 - dt * 5));
     } else {
       f.vel.x += (dir.x * f.speed - f.vel.x) * Math.min(1, dt * 10);
@@ -1257,6 +1539,9 @@ export class Game implements FighterEvents {
       const s = this.shake * 0.12;
       camPos.addInPlace(new Vector3((Math.random() - 0.5) * s, (Math.random() - 0.5) * s, (Math.random() - 0.5) * s));
     }
+    this.fovKick = Math.max(0, this.fovKick - dt * 0.35);
+    this.camera.fov = this.baseFov - this.fovKick;
+    this.updateTrails();
     this.camera.position.copyFrom(Vector3.Lerp(this.camera.position, camPos, Math.min(1, dt * 10)));
     this.camLook = Vector3.Lerp(this.camLook, look, Math.min(1, dt * 10));
     this.camera.setTarget(this.camLook);

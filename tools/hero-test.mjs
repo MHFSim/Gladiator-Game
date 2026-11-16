@@ -40,8 +40,10 @@ const before = await page.evaluate(() => ({ hpMax: __game.player.stats.hpMax, fo
 console.log('Werte', JSON.stringify(before));
 for (let i = 0; i < 2; i++) {
   await page.evaluate(() => __game.kill(__game.foe, __game.foe.pos.subtract(__game.player.pos).normalize()));
-  await wait(i === 0 ? 5200 : 4500);
+  if (i === 0) await wait(5200);
 }
+await page.waitForFunction(() => !document.getElementById('result').hidden, { timeout: 400000, polling: 300 });
+await wait(2500);
 await page.screenshot({ path: `${dir}/h4-result.png` });
 const hero = await page.evaluate(() => JSON.parse(localStorage.getItem('seg.hero.v1')));
 console.log('Held', JSON.stringify(hero));

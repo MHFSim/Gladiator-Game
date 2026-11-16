@@ -1,34 +1,36 @@
 import { Vector3 } from '@babylonjs/core';
-import { blockSideFor, COMBAT, type ActiveAttack, type Dir, type Fighter } from './fighter';
+import { COMBAT, type ActiveAttack, type Fighter } from './fighter';
 
 export interface AiLevel {
   name: string;
   react: number;
   block: number;
   parry: number;
-  aggression: number;
-  feint: number;
-  bash: number;
   dodge: number;
-  exploit: number;
+  aggression: number;
+  combo: number;
+  heavy: number;
+  bash: number;
+  punish: number;
 }
 
-const DIRS: Dir[] = ['top', 'left', 'right'];
-const pick = <T>(a: T[]): T => a[Math.floor(Math.random() * a.length)];
-
 /**
- * KI-Gegner: hält Abstand, umkreist, greift mit Ankündigung an, reagiert mit menschlicher Verzögerung.
- * Spielt nach denselben Regeln wie der Spieler.
+ * KI-Gegner nach denselben Regeln wie der Spieler:
+ * hält Abstand, umkreist, greift mit Kombos an, blockt, pariert mit menschlicher Verzögerung,
+ * bricht Spieler, die nur blocken, mit dem Schildstoß auf und bestraft Fehler.
  */
 export class AiController {
   level: AiLevel;
   private nextAttack = 2;
-  private nextGuard = 1;
   private pending: { at: number; fn: () => void }[] = [];
   private strafe = 1;
   private nextStrafe = 2;
-  private foeGuardSince = 0;
-  private lastFoeGuard: Dir = 'top';
+  private foeBlockSince = -1;
+  private comboLeft = 0;
+  private releaseBlockAt = 0;
+  /** Sonderfähigkeit auslösen (setzt das Spiel) */
+  special: (() => void) | null = null;
+  specialKind = '';
 
   constructor(
     private readonly self: Fighter,
@@ -48,35 +50,45 @@ export class AiController {
 
   reset(now: number): void {
     this.pending = [];
+    this.comboLeft = 0;
+    this.self.setBlock(false);
     this.nextAttack = now + 1.5 + Math.random();
   }
 
   /** Der Spieler beginnt einen Angriff: reagieren wie ein Mensch, also mit Verzögerung */
   onFoeAttack(a: ActiveAttack, now: number): void {
     const L = this.level;
-    const need = blockSideFor(a.dir);
     const react = L.react * (0.8 + Math.random() * 0.45);
-    const r = Math.random();
     const timeLeft = a.impactAt - now;
-    if (r < L.parry && timeLeft > react + 0.1) {
-      // Parade kurz vor dem Treffer
-      const at = a.impactAt - 0.1 - Math.random() * 0.08;
-      // Einmal entschieden, wird pariert – auch wenn der Spieler eine Finte macht
-      this.schedule(at, () => this.self.parry(need));
-    } else if (r < L.parry + L.block) {
-      this.schedule(now + react, () => this.self.setGuard(need));
-    } else if (r < L.parry + L.block + L.dodge && timeLeft > react) {
+    const r = Math.random();
+    // Gegen Wuchtschläge lieber ausweichen oder parieren als blocken (Block bricht)
+    const vsHeavy = a.heavy ? 1.6 : 1;
+    if (r < L.parry && timeLeft > react) {
+      // Parade: Block kurz vor dem Treffer frisch drücken
+      const at = a.impactAt - 0.06 - Math.random() * (COMBAT.parryWindow * 0.7);
+      this.schedule(at, () => {
+        this.self.setBlock(false);
+        this.self.setBlock(true);
+        this.releaseBlockAt = a.impactAt + 0.35;
+      });
+    } else if (r < L.parry + L.dodge * vsHeavy && timeLeft > react + 0.05) {
       this.schedule(now + react, () => {
         if (this.foe.attack !== a) return;
         const away = this.self.pos.subtract(this.foe.pos).normalize();
         const side = new Vector3(away.z, 0, -away.x).scale(Math.random() < 0.5 ? 1 : -1);
-        this.self.roll(side.add(away.scale(0.4)));
+        this.self.setBlock(false);
+        this.self.roll(side.add(away.scale(0.5)));
+      });
+    } else if (r < L.parry + L.dodge * vsHeavy + L.block / vsHeavy && timeLeft > react) {
+      this.schedule(now + react, () => {
+        if (this.self.mode === 'free' || this.self.mode === 'block') {
+          // Halten, ohne zu parieren (Block war schon früh oben)
+          this.self.setBlock(true);
+          this.self.blockStart = -10;
+          this.releaseBlockAt = a.impactAt + 0.3 + Math.random() * 0.4;
+        }
       });
     }
-  }
-
-  onFoeFeint(): void {
-    // Eine geplante Parade läuft ins Leere – die Strafe dafür ist die Sperrzeit der Parade
   }
 
   /** Liefert die gewünschte Bewegung (Richtung, Geschwindigkeit) */
@@ -84,43 +96,63 @@ export class AiController {
     const self = this.self;
     const foe = this.foe;
     const L = this.level;
-    // Geplante Reaktionen ausführen
     const due = this.pending.filter((p) => p.at <= now);
     this.pending = this.pending.filter((p) => p.at > now);
     for (const p of due) p.fn();
 
-    if (self.mode === 'dead' || foe.mode === 'dead') return { dir: Vector3.Zero(), speed: 0 };
+    if (self.mode === 'dead' || foe.mode === 'dead') {
+      self.setBlock(false);
+      return { dir: Vector3.Zero(), speed: 0 };
+    }
+    if (self.blockWanted && now >= this.releaseBlockAt && !foe.attack) self.setBlock(false);
 
     const toFoe = foe.pos.subtract(self.pos);
     toFoe.y = 0;
     const dist = toFoe.length();
     const fwd = dist > 1e-3 ? toFoe.scale(1 / dist) : new Vector3(0, 0, 1);
     const side = new Vector3(fwd.z, 0, -fwd.x);
+    const reach = self.kit.reach;
 
-    // Merken, wie lange der Spieler dieselbe Deckung hält (Verteidiger, die nur blocken, werden gebrochen)
-    if (foe.guard !== this.lastFoeGuard) {
-      this.lastFoeGuard = foe.guard;
-      this.foeGuardSince = now;
+    // Wie lange blockt der Spieler schon?
+    if (foe.blocking) {
+      if (this.foeBlockSince < 0) this.foeBlockSince = now;
+    } else this.foeBlockSince = -1;
+
+    // Kombo weiterführen
+    if (this.comboLeft > 0 && self.mode === 'attack' && self.canAct && dist < reach + 0.3) {
+      this.comboLeft--;
+      self.startAttack(false);
     }
 
-    // Bestrafen: Gegner wankt oder ist gebrochen -> sofort schwer zuschlagen
-    if ((foe.mode === 'stagger' || foe.mode === 'hit' || foe.mode === 'parry') && self.canAct && dist < 2.4 && Math.random() < L.exploit * 0.08) {
-      this.attackSmart(true);
+    // Fehler bestrafen: Spieler wankt oder ist gebrochen -> sofort zuschlagen
+    if ((foe.mode === 'stagger' || foe.mode === 'hit') && self.canAct && !self.blockWanted && dist < reach + 0.2 && Math.random() < L.punish * 0.1) {
+      self.startAttack(Math.random() < 0.5);
+      this.comboLeft = Math.random() < L.combo ? 2 : 0;
     }
 
-    // Deckung wechseln, wenn nichts los ist
-    if (now >= this.nextGuard && self.mode === 'free' && !foe.attack) {
-      self.setGuard(pick(DIRS));
-      this.nextGuard = now + 1.2 + Math.random() * 2.2;
+    // Sonderfähigkeit, wenn sie passt
+    if (self.canAct && !self.blockWanted && now >= self.specialReadyAt && Math.random() < 0.02 + L.aggression * 0.02) {
+      const k = this.specialKind;
+      const fit =
+        (k === 'ram' && dist < 4.5 && dist > 1.5) ||
+        (k === 'pursuit' && dist > 5) ||
+        (k === 'hook' && dist < reach + 0.3 && (foe.blocking || Math.random() < 0.3)) ||
+        ((k === 'javelin' || k === 'net') && dist > 2.6 && dist < 9) ||
+        (k === 'challenge' && dist < 5);
+      if (fit) this.special?.();
     }
 
     // Angreifen
-    const tired = self.g.stamina < 25;
-    if (!tired && now >= this.nextAttack && self.canAct && dist < 2.6) {
-      const turtle = now - this.foeGuardSince > 1.6 && foe.mode === 'free';
-      if (turtle && Math.random() < L.bash * 2) self.bash();
-      else this.attackSmart(Math.random() < 0.3);
-      this.nextAttack = now + (1.0 + Math.random() * 2.2) * (1.35 - L.aggression);
+    const tired = self.g.stamina < 22;
+    if (!tired && now >= this.nextAttack && self.canAct && !self.blockWanted && dist < reach + 0.35) {
+      const turtle = this.foeBlockSince >= 0 && now - this.foeBlockSince > 0.5;
+      if (turtle && Math.random() < L.bash) self.bash();
+      else if (turtle || Math.random() < L.heavy) self.startAttack(true);
+      else {
+        self.startAttack(false);
+        this.comboLeft = Math.random() < L.combo ? (Math.random() < 0.6 ? 2 : 1) : 0;
+      }
+      this.nextAttack = now + (0.9 + Math.random() * 2.0) * (1.35 - L.aggression);
     }
 
     // Abstand halten und umkreisen
@@ -130,36 +162,17 @@ export class AiController {
     }
     let dir = Vector3.Zero();
     let speed = 0;
-    if (dist > 2.7) {
+    if (self.blockWanted) return { dir, speed };
+    if (dist > reach + 0.4) {
       dir = fwd;
-      speed = dist > 5 ? 3.2 : 1.6;
-    } else if (dist < 1.5 || tired) {
+      speed = dist > 5 ? 3.2 : 1.7;
+    } else if (dist < 1.4 || tired) {
       dir = fwd.scale(-1).add(side.scale(this.strafe * 0.4)).normalize();
       speed = tired ? 1.6 : 1.0;
     } else if (self.mode === 'free') {
       dir = side.scale(this.strafe);
-      speed = 0.75;
+      speed = 0.8;
     }
     return { dir, speed };
-  }
-
-  private attackSmart(heavy: boolean): void {
-    const L = this.level;
-    // Richtung bevorzugt dort, wo der Spieler gerade NICHT blockt
-    let dir: Dir = pick(DIRS);
-    if (Math.random() < L.exploit) {
-      const open = DIRS.filter((d) => blockSideFor(d) !== this.foe.guard);
-      dir = pick(open);
-    }
-    if (!this.self.startAttack(dir, heavy)) return;
-    const a = this.self.attack;
-    if (a && heavy && Math.random() < L.feint) {
-      // Finte: kurz vor dem Treffer abbrechen und schnell leicht nachsetzen
-      this.schedule(a.impactAt - COMBAT.feint.latest - 0.12, () => {
-        if (this.self.feint()) {
-          this.schedule(this.self.now + 0.12, () => this.self.startAttack(pick(DIRS), false));
-        }
-      });
-    }
   }
 }

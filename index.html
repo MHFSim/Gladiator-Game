@@ -52,20 +52,19 @@
 
       <!-- Schema B: Tasten -->
       <div id="buttons">
-        <button id="btn-g-top" class="round dir" aria-label="Deckung oben">▲</button>
-        <button id="btn-g-left" class="round dir" aria-label="Deckung links">◀</button>
-        <button id="btn-g-right" class="round dir" aria-label="Deckung rechts">▶</button>
         <button id="btn-attack" class="round big">Schlag</button>
-        <button id="btn-parry" class="round mid">Parade</button>
-        <button id="btn-bash" class="round mid">Faust</button>
+        <button id="btn-bash" class="round mid">Stoß</button>
         <button id="btn-roll" class="round mid">Rolle</button>
       </div>
+      <!-- in beiden Schemata -->
+      <div id="common-buttons">
+        <button id="btn-block" class="round block">Block</button>
+        <button id="btn-special" class="round mid special" hidden>Spezial</button>
+      </div>
+      <div id="hurt-flash"></div>
 
       <div id="guard-widget" hidden>
         <div class="foe-bars"><div class="foe-hp"><div id="foe-hp-fill"></div></div><div class="foe-st"><div id="foe-st-fill"></div></div></div>
-        <div class="gw gw-top"></div>
-        <div class="gw gw-left"></div>
-        <div class="gw gw-right"></div>
         <div class="gw-ring" hidden><span>JETZT</span></div>
       </div>
       <div id="float-layer"></div>
@@ -111,17 +110,38 @@
           <div class="xpbar"><span id="hs-xp"></span></div>
           <div id="hs-xp-text" class="hc-small"></div>
           <div id="hs-record" class="hc-small"></div>
-          <button id="hs-export" class="wide slim">Als Datei sichern</button>
-          <button id="hs-import" class="wide slim">Aus Datei laden</button>
+          <div id="hs-denare" class="denare"></div>
+          <div class="hs-spacer"></div>
+          <div class="hs-row">
+            <button id="hs-export" class="mini">Sichern</button>
+            <button id="hs-import" class="mini">Laden</button>
+            <button id="hs-back" class="mini">Zurück</button>
+          </div>
           <input id="hs-file" type="file" accept=".json,application/json" hidden />
-          <button id="hs-respec" class="wide slim ghost">Punkte neu verteilen</button>
         </div>
         <div class="hs-right">
-          <div class="hs-head"><span>Attribute</span><span id="hs-free"></span></div>
-          <div id="hs-attrs"></div>
-          <div class="hs-actions">
+          <div class="hs-tabs">
+            <button data-tab="attrs" class="on">Attribute</button>
+            <button data-tab="class">Klasse</button>
+            <button data-tab="gear">Ausrüstung</button>
+            <button data-tab="smith">Schmied</button>
+          </div>
+          <div id="hs-p-attrs" class="hs-panel">
+            <div class="hs-head"><span id="hs-free"></span><button id="hs-respec" class="mini ghost">Neu verteilen</button></div>
+            <div id="hs-attrs"></div>
             <button id="hs-apply" class="wide slim">Übernehmen</button>
-            <button id="hs-back" class="wide slim ghost">Zurück</button>
+          </div>
+          <div id="hs-p-class" class="hs-panel" hidden>
+            <div id="hs-classes" class="class-grid"></div>
+            <div id="hs-class-desc" class="hc-small class-desc"></div>
+          </div>
+          <div id="hs-p-gear" class="hs-panel" hidden>
+            <div id="hs-slots"></div>
+            <div id="hs-inv" class="inv-list"></div>
+          </div>
+          <div id="hs-p-smith" class="hs-panel" hidden>
+            <div class="hc-small">Aufwerten bis +10. Ab +6 kann es misslingen – die Denare sind dann weg, der Gegenstand bleibt.</div>
+            <div id="hs-smith" class="inv-list"></div>
           </div>
           <div id="hs-msg" class="hc-small"></div>
         </div>
@@ -179,8 +199,7 @@
       </label>
       <label>Block-Hilfe
         <select id="set-assist">
-          <option value="show">Zeitanzeige</option>
-          <option value="auto">Automatisch blocken</option>
+          <option value="show">Zeitanzeige für Parade</option>
           <option value="off">Aus (für Profis)</option>
         </select>
       </label>

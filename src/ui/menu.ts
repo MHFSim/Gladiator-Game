@@ -2,7 +2,9 @@ import QRCode from 'qrcode';
 import type { Game } from '../game/game';
 import { localTransport, newRoomCode, normalizeCode, trysteroTransport, type Transport } from '../net/transport';
 import type { NetSetup } from '../game/game';
-import { AI_LEVELS, AI_NAMES, aiAttrs, balanced, derive, winReward, type Attrs, type Hero } from '../game/hero';
+import { AI_LEVELS, AI_NAMES, aiAttrs, balanced, derive, equippedOf, heroKit, heroStats, winReward, type Attrs, type Hero } from '../game/hero';
+import { CLASS_ORDER, CLASSES, type ClassId } from '../data/classes';
+import { aiEquipment, applyItemStats, kitFor, tiersOf, validItem, winDenare, type Equipped, type Item } from '../game/items';
 import type { Settings } from '../core/settings';
 import { saveSettings } from '../core/settings';
 import { HeroScreen } from './heroScreen';
@@ -22,6 +24,8 @@ interface HeroMsg {
   name: string;
   level: number;
   attrs: Attrs;
+  cls: ClassId;
+  items: Item[];
 }
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -42,7 +46,7 @@ export class Menu {
     private readonly onStart: (mode: 'solo' | 'host' | 'guest') => void,
     private readonly netKind: 'webrtc' | 'local',
   ) {
-    this.heroScreen = new HeroScreen(hero, () => this.show('menu-main'));
+    this.heroScreen = new HeroScreen(hero, () => this.show('menu-main'), () => this.applyHeroLook());
     this.results = new Results(() => this.hero, {
       again: () => this.game.rematch(),
       hero: () => this.reopen('menu-hero'),
@@ -85,9 +89,13 @@ export class Menu {
     }
   }
 
+  current: Screen = 'menu-main';
+
   private show(id: Screen): void {
+    this.current = id;
     for (const k of ['menu-main', 'menu-host', 'menu-join', 'menu-train', 'menu-hero']) $(k).hidden = k !== id;
     $('menu').classList.toggle('sub', id === 'menu-hero' || id === 'menu-train');
+    $('menu').classList.toggle('hero-bg', id === 'menu-hero');
     if (id === 'menu-hero') this.heroScreen.show();
     if (id === 'menu-main') this.heroScreen.refreshCard();
   }
@@ -105,22 +113,45 @@ export class Menu {
   }
 
   private heroMsg(): HeroMsg {
-    return { name: this.hero.name, level: this.hero.level, attrs: { ...this.hero.attrs } };
+    return { name: this.hero.name, level: this.hero.level, attrs: { ...this.hero.attrs }, cls: this.hero.cls, items: Object.values(equippedOf(this.hero)) as Item[] };
   }
+
+  /** Aussehen des eigenen Gladiators sofort anpassen (Heldenmenü) */
+  private applyHeroLook(): void {
+    if (this.game.role !== 'solo') return;
+    this.game.setClass(this.game.player, this.hero.cls, heroKit(this.hero), tiersOf(equippedOf(this.hero)));
+    this.game.player.stats = heroStats(this.hero);
+  }
+
+  /** Klassen der Trainingsgegner (pro Besuch neu gewürfelt) */
+  private trainClasses: ClassId[] = AI_LEVELS.map(() => CLASS_ORDER[Math.floor(Math.random() * CLASS_ORDER.length)]);
+  private trainEq: Equipped[] = AI_LEVELS.map((l) => aiEquipment(l));
 
   /** Eigene Werte und KI-Gegner fürs Training setzen */
   private applySolo(i: number): void {
     const lvl = AI_LEVELS[i];
-    this.game.setupSolo(derive(this.hero.attrs), { name: this.hero.name, level: this.hero.level }, derive(aiAttrs(lvl)), { name: AI_NAMES[i], level: lvl }, i);
+    const fc = this.trainClasses[i];
+    const feq = this.trainEq[i];
+    this.game.setupSolo(
+      heroStats(this.hero),
+      { name: this.hero.name, level: this.hero.level },
+      applyItemStats(derive(aiAttrs(lvl)), feq),
+      { name: `${AI_NAMES[i]} (${CLASSES[fc].name})`, level: lvl },
+      i,
+    );
+    this.game.setClass(this.game.player, this.hero.cls, heroKit(this.hero), tiersOf(equippedOf(this.hero)));
+    this.game.setClass(this.game.foe, fc, kitFor(fc, feq), tiersOf(feq));
   }
 
   private showTrain(): void {
     const list = $('train-list');
     list.innerHTML = '';
+    this.trainClasses = AI_LEVELS.map(() => CLASS_ORDER[Math.floor(Math.random() * CLASS_ORDER.length)]);
+    this.trainEq = AI_LEVELS.map((l) => aiEquipment(l));
     AI_LEVELS.forEach((lvl, i) => {
       const b = document.createElement('button');
       const xp = winReward(this.hero.level, lvl, 0, false, false).base;
-      b.innerHTML = `${AI_NAMES[i]} · Stufe ${lvl}<small>Sieg: ${xp} Erfahrung</small>`;
+      b.innerHTML = `${AI_NAMES[i]} · ${CLASSES[this.trainClasses[i]].name} · Stufe ${lvl}<small>Sieg: ${xp} Erfahrung, ${winDenare(lvl, false)} Denare, Beute</small>`;
       b.onclick = async () => {
         this.settings.difficulty = i;
         saveSettings(this.settings);
@@ -198,8 +229,21 @@ export class Menu {
       const guest = h.hero;
       const equal = $<HTMLSelectElement>('host-mode').value === 'equal';
       const me = this.heroMsg();
+      const eqOf = (m: HeroMsg): Equipped => {
+        const eq: Equipped = {};
+        for (const it of Array.isArray(m.items) ? m.items.filter(validItem) : []) eq[it.slot] = it;
+        return eq;
+      };
+      const gcls: ClassId = CLASS_ORDER.includes(guest.cls) ? guest.cls : 'murmillo';
+      const meEq = eqOf(me);
+      const gEq = eqOf(guest);
       const setup: NetSetup = {
-        stats: [derive(equal ? balanced(me.attrs) : me.attrs), derive(equal ? balanced(guest.attrs) : guest.attrs)],
+        stats: equal
+          ? [derive(balanced(me.attrs)), derive(balanced(guest.attrs))]
+          : [applyItemStats(derive(me.attrs), meEq), applyItemStats(derive(guest.attrs), gEq)],
+        cls: [me.cls, gcls],
+        kits: equal ? [CLASSES[me.cls].kit, CLASSES[gcls].kit] : [kitFor(me.cls, meEq), kitFor(gcls, gEq)],
+        tiers: [tiersOf(meEq), tiersOf(gEq)],
         info: [
           { name: me.name, level: me.level },
           { name: String(guest.name).slice(0, 18), level: guest.level },

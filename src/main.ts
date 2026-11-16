@@ -225,7 +225,15 @@ async function boot(): Promise<void> {
     weather.update(frameDt);
     if (menu.open && !view) {
       orbit += frameDt * 0.08;
-      g.debugCamera(new Vector3(Math.sin(orbit) * 11, 4.2, Math.cos(orbit) * 11), new Vector3(0, 1.4, 0));
+      if (menu.current === 'menu-hero') {
+        // Im Heldenmenü: den eigenen Gladiator zeigen (rechts im Bild frei für die Liste)
+        const p = g.player.pos;
+        const a = Math.sin(orbit * 2) * 0.35;
+        const fwd = new Vector3(Math.sin(g.player.g.heading), 0, Math.cos(g.player.g.heading));
+        const right = new Vector3(fwd.z, 0, -fwd.x);
+        const eye = p.add(fwd.scale(3.3 * Math.cos(a))).add(right.scale(3.3 * Math.sin(a) - 1.1)).add(new Vector3(0, 1.45, 0));
+        g.debugCamera(eye, p.add(right.scale(-1.45)).add(new Vector3(0, 1.05, 0)));
+      } else g.debugCamera(new Vector3(Math.sin(orbit) * 11, 4.2, Math.cos(orbit) * 11), new Vector3(0, 1.4, 0));
     }
     if (view === 'hero') g.debugCamera(g.player.pos.add(new Vector3(1.6, 1.7, 2.1)), g.player.pos.add(new Vector3(0, 1.25, 0)));
     if (view === 'arena') g.debugCamera(new Vector3(9, 6.5, -12), new Vector3(-2, 1.5, 2));

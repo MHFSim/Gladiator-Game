@@ -54,7 +54,7 @@ console.log('Bilder pro Sekunde Host/Gast:', await frames(host), await frames(gu
 const state = (p) =>
   p.evaluate(() => {
     const g = window.__game;
-    const f = (x) => ({ pos: [x.pos.x.toFixed(2), x.pos.z.toFixed(2)], hp: Math.round(x.g.hp), mode: x.mode, guard: x.guard });
+    const f = (x) => ({ pos: [x.pos.x.toFixed(2), x.pos.z.toFixed(2)], hp: Math.round(x.g.hp), mode: x.mode, cls: x.cls });
     return JSON.stringify({ role: g.role, player: f(g.player), foe: f(g.foe) });
   });
 console.log('Start  Host:', await state(host));
@@ -76,22 +76,20 @@ console.log('Gelaufen Gast:', await state(guest));
 await guest.evaluate(() => window.__game.player.g.root.position.set(0, 0, 0.75));
 await host.evaluate(() => window.__game.player.g.root.position.set(0, 0, -0.95));
 await sleep(3000);
-// 1) Gastgeber Deckung oben, Gast schlägt von links -> Treffer am Gastgeber
-await host.evaluate(() => window.__game.player.setGuard('top'));
-await guest.evaluate(() => window.__input.push({ type: 'guard', dir: 'left' }));
-await sleep(1500);
+// 1) Gastgeber blockt nicht, Gast schlägt -> Treffer am Gastgeber
 await guest.evaluate(() => window.__input.push({ type: 'light' }));
 await sleep(12000);
 console.log('Treffer?  Host:', await state(host));
 console.log('Treffer?  Gast:', await state(guest));
-// 2) Gastgeber blockt rechts, Gast schlägt wieder von links -> geblockt
-await host.evaluate(() => window.__game.player.setGuard('right'));
+// 2) Gastgeber hält Block, Gast schlägt -> geblockt
+await host.evaluate(() => window.__input.push({ type: 'block', on: true }));
+await sleep(1500);
 await guest.evaluate(() => window.__input.push({ type: 'light' }));
 await sleep(12000);
 console.log('Block?    Host:', await state(host));
 console.log('Block?    Gast:', await state(guest));
-// 3) Gastgeber schlägt von oben, Gast blockt nicht (Deckung links)
-await host.evaluate(() => window.__game.player.setGuard('top'));
+// 3) Gastgeber lässt los und schlägt, Gast blockt nicht
+await host.evaluate(() => window.__input.push({ type: 'block', on: false }));
 await host.evaluate(() => window.__input.push({ type: 'light' }));
 await sleep(12000);
 console.log('Gast getroffen? Host:', await state(host));

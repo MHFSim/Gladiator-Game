@@ -13,6 +13,25 @@ import {
   type Attrs,
   type Hero,
 } from '../game/hero';
+import { CLASS_ORDER, CLASSES } from '../data/classes';
+import {
+  AFFIX_NAMES,
+  dismantleValue,
+  mainText,
+  MAX_PLUS,
+  RARITY,
+  SLOT_NAMES,
+  SLOTS,
+  upgradeChance,
+  upgradeCost,
+  type Item,
+  type Slot,
+} from '../game/items';
+
+function itemHtml(it: Item): string {
+  const aff = it.affixes.map((a) => AFFIX_NAMES[a.k](a.v)).join(' · ');
+  return `<span style="color:${RARITY[it.rarity].color}">${it.name}${it.plus ? ' +' + it.plus : ''}</span><small>${mainText(it)}${aff ? ' · ' + aff : ''}</small>`;
+}
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -21,10 +40,17 @@ export class HeroScreen {
   private pending: Attrs = zeroAttrs();
   private rows = new Map<AttrKey, { val: HTMLElement; desc: HTMLElement; minus: HTMLButtonElement; plus: HTMLButtonElement }>();
 
+  private tab: 'attrs' | 'class' | 'gear' | 'smith' = 'attrs';
+  private selSlot: Slot = 'weapon';
+
   constructor(
     private hero: Hero,
     private readonly onBack: () => void,
+    private readonly onChange: (h: Hero) => void,
   ) {
+    document.querySelectorAll<HTMLButtonElement>('.hs-tabs button').forEach((b) => {
+      b.onclick = () => this.setTab(b.dataset.tab as HeroScreen['tab']);
+    });
     const list = $('hs-attrs');
     for (const k of ATTRS) {
       const info = ATTR_INFO[k];
@@ -55,6 +81,7 @@ export class HeroScreen {
       this.hero.attrs = zeroAttrs();
       this.pending = zeroAttrs();
       saveHero(this.hero);
+      this.onChange(this.hero);
       this.render();
       this.msg('Alle Punkte sind wieder frei.');
     };
@@ -69,6 +96,7 @@ export class HeroScreen {
       if (!confirm(`${r.name} (Stufe ${r.level}) laden? Der jetzige Gladiator wird ersetzt.`)) return;
       Object.assign(this.hero, r);
       saveHero(this.hero);
+      this.onChange(this.hero);
       this.pending = zeroAttrs();
       this.render();
       this.msg(`${r.name} ist zurück im Ludus.`);
@@ -102,6 +130,7 @@ export class HeroScreen {
     for (const k of ATTRS) this.hero.attrs[k] += this.pending[k];
     this.pending = zeroAttrs();
     saveHero(this.hero);
+    this.onChange(this.hero);
     this.render();
     this.msg(`${n} ${n === 1 ? 'Punkt' : 'Punkte'} verteilt. Gespeichert.`);
   }
@@ -121,6 +150,114 @@ export class HeroScreen {
     a.click();
     window.setTimeout(() => URL.revokeObjectURL(url), 2000);
     this.msg('Datei gespeichert.');
+  }
+
+  private setTab(t: HeroScreen['tab']): void {
+    this.tab = t;
+    document.querySelectorAll<HTMLButtonElement>('.hs-tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === t));
+    for (const k of ['attrs', 'class', 'gear', 'smith']) $('hs-p-' + k).hidden = k !== t;
+    this.msg('');
+    this.render();
+  }
+
+  private save(): void {
+    saveHero(this.hero);
+    this.onChange(this.hero);
+    this.render();
+  }
+
+  private renderClasses(): void {
+    const grid = $('hs-classes');
+    grid.innerHTML = '';
+    for (const id of CLASS_ORDER) {
+      const c = CLASSES[id];
+      const b = document.createElement('button');
+      b.className = id === this.hero.cls ? 'on' : '';
+      b.innerHTML = `${c.name}<small>${c.role}</small>`;
+      b.onclick = () => {
+        this.hero.cls = id;
+        this.save();
+      };
+      grid.appendChild(b);
+    }
+    const c = CLASSES[this.hero.cls];
+    $('hs-class-desc').innerHTML = `<b>${c.name}</b> – ${c.desc}<br><b>${c.special.name}</b> (alle ${c.special.cooldown} s): ${c.special.desc}`;
+  }
+
+  private renderGear(): void {
+    const h = this.hero;
+    const slots = $('hs-slots');
+    slots.innerHTML = '';
+    for (const s of SLOTS) {
+      const id = h.equipped[s];
+      const it = h.items.find((i) => i.id === id);
+      const row = document.createElement('div');
+      row.className = 'slot-row' + (s === this.selSlot ? ' sel' : '');
+      const name = s === 'shield' && h.cls === 'retiarius' ? 'Schulterschutz' : SLOT_NAMES[s];
+      row.innerHTML = `<div><span class="slot-name">${name}</span><br>${it ? itemHtml(it) : '<small>leer</small>'}</div><button class="mini">Wechseln</button>`;
+      row.onclick = () => {
+        this.selSlot = s;
+        this.render();
+      };
+      slots.appendChild(row);
+    }
+    const inv = $('hs-inv');
+    inv.innerHTML = '';
+    const list = h.items.filter((i) => i.slot === this.selSlot && i.id !== h.equipped[this.selSlot]);
+    list.sort((a, b) => b.rarity - a.rarity || b.plus - a.plus);
+    if (!list.length) inv.innerHTML = `<div class="hc-small">Keine weiteren Teile für „${SLOT_NAMES[this.selSlot]}“. Siege bringen Beute.</div>`;
+    for (const it of list) {
+      const row = document.createElement('div');
+      row.className = 'inv-row';
+      row.innerHTML = `<div>${itemHtml(it)}</div><div class="btns"><button class="mini">Anlegen</button></div>`;
+      row.querySelector('button')!.onclick = () => {
+        h.equipped[it.slot] = it.id;
+        this.save();
+        this.msg(`${it.name} angelegt.`);
+      };
+      inv.appendChild(row);
+    }
+  }
+
+  private renderSmith(): void {
+    const h = this.hero;
+    const box = $('hs-smith');
+    box.innerHTML = '';
+    const eqIds = new Set(Object.values(h.equipped));
+    const list = [...h.items].sort((a, b) => Number(eqIds.has(b.id)) - Number(eqIds.has(a.id)) || b.rarity - a.rarity || b.plus - a.plus);
+    for (const it of list) {
+      const row = document.createElement('div');
+      row.className = 'inv-row';
+      const worn = eqIds.has(it.id);
+      const cost = upgradeCost(it);
+      const can = it.plus < MAX_PLUS;
+      row.innerHTML = `<div>${itemHtml(it)}${worn ? '<small>angelegt</small>' : ''}</div><div class="btns">${
+        can ? `<button class="mini up">+1 · ${cost} D${upgradeChance(it) < 100 ? ` · ${upgradeChance(it)} %` : ''}</button>` : '<small>max.</small>'
+      }${worn ? '' : `<button class="mini ghost del">Zerlegen +${dismantleValue(it)}</button>`}</div>`;
+      const up = row.querySelector<HTMLButtonElement>('.up');
+      if (up) {
+        up.disabled = h.denare < cost;
+        up.onclick = () => {
+          if (h.denare < cost) return;
+          h.denare -= cost;
+          if (Math.random() * 100 < upgradeChance(it)) {
+            it.plus++;
+            this.msg(`Gelungen! ${it.name} +${it.plus}.`);
+          } else this.msg('Der Schmied hat versagt – die Denare sind weg.');
+          this.save();
+        };
+      }
+      const del = row.querySelector<HTMLButtonElement>('.del');
+      if (del) {
+        del.onclick = () => {
+          h.denare += dismantleValue(it);
+          h.items = h.items.filter((x) => x !== it);
+          this.msg(`${it.name} zerlegt.`);
+          this.save();
+        };
+      }
+      box.appendChild(row);
+    }
   }
 
   show(): void {
@@ -149,7 +286,11 @@ export class HeroScreen {
     const need = xpForNext(h.level);
     $('hs-xp').style.width = `${Math.min(100, (100 * h.xp) / need)}%`;
     $('hs-xp-text').textContent = h.level >= MAX_LEVEL ? 'Höchste Stufe erreicht' : `${h.xp} / ${need} Erfahrung bis Stufe ${h.level + 1}`;
-    $('hs-record').textContent = `Siege ${h.wins} · Niederlagen ${h.losses}`;
+    $('hs-record').textContent = `${CLASSES[h.cls].name} · Siege ${h.wins} · Niederlagen ${h.losses}`;
+    $('hs-denare').textContent = `${h.denare} Denare`;
+    if (this.tab === 'class') this.renderClasses();
+    if (this.tab === 'gear') this.renderGear();
+    if (this.tab === 'smith') this.renderSmith();
     this.refreshCard();
   }
 
@@ -157,7 +298,7 @@ export class HeroScreen {
   refreshCard(): void {
     const h = this.hero;
     $('hc-name').textContent = h.name;
-    $('hc-level').textContent = `Stufe ${h.level}`;
+    $('hc-level').textContent = `${CLASSES[h.cls].name} · Stufe ${h.level}`;
     const need = xpForNext(h.level);
     $('hc-xp').style.width = `${Math.min(100, (100 * h.xp) / need)}%`;
     $('hc-xp-text').textContent = `${h.xp} / ${need} Erfahrung`;

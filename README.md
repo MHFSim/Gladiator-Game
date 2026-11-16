@@ -5,7 +5,7 @@ Gebaut mit [Babylon.js 9](https://www.babylonjs.com), läuft komplett über GitH
 
 **Spielen:** https://mhfsim.github.io/Gladiator-Game/
 
-## Stand: Phase 3 – Publikum, Wetter, Kolosseum
+## Stand: Phase 4 – Klassen, Ausrüstung, neuer Kampf
 
 **Arena und Grafik (Phase 0)**
 - Ludus von Capua, komplett im Code erzeugt: bemalte Podiumsmauer, zwei Tore mit Fallgitter, Sitzstufen,
@@ -13,17 +13,21 @@ Gebaut mit [Babylon.js 9](https://www.babylonjs.com), läuft komplett über GitH
 - Physikalischer Himmel, Sonne mit weichen Schatten, Dunst, Staub, Tageszeit 6–20:30 Uhr im Menü.
 - Murmillo mit Helm, Federbusch, Gittervisier, bemaltem Scutum, Gladius, Manica, Beinschiene, Gürtel.
 
-**Kampf (Phase 1)**
-- Deckung oben, links, rechts. Geblockt wird automatisch, wenn die eigene Deckung (gold) zur Angriffsseite (rot) passt.
-- Leichte und schwere Angriffe aus allen drei Richtungen, Kombos, Finten (schweren Angriff abbrechen).
-- Parade im letzten Moment: Gegner taumelt, du darfst kontern.
-- Deckung brechen mit dem Schild, Ausweichrolle mit Unverwundbarkeit, Ausdauer und Erschöpfung.
-- Trefferzonen Kopf, Rumpf, Waffenarm, Bein mit Rüstung (Helm, Manica, Beinschiene) und Folgen (schwächer, langsamer).
-- Aufschalten mit Kamera, die beide Kämpfer zeigt. Beim Seitwärts- und Rückwärtsgehen drehen sich die Beine,
-  der Oberkörper bleibt zum Gegner gerichtet.
-- KI-Gegner in fünf Stufen (Rekrut bis Primus Palus) mit menschlicher Reaktionszeit, Paraden, Finten, Schildstößen.
-- Runden mit Spielstand, Blut, Funken, Blutflecken im Sand, Bildstopp und Kamerawackeln.
-- Alle Kampfwerte in `src/data/combat.json`.
+**Kampf (überarbeitet in Phase 4: einfacher, mehr Action)**
+- Schlag tippen: Kombo aus drei Schlägen, der dritte trifft härter. Schlag halten: Wuchtschlag, bricht jeden Block und lässt sich im Ausholen nicht von leichten Treffern stoppen.
+- Block halten: fängt Schläge von vorn ab, Richtung automatisch. Block im richtigen Moment drücken (goldener Ring „JETZT“) = Parade: der Gegner taumelt, dein nächster Schlag kommt schneller und härter.
+- Schildstoß bricht jeden Block. Ausweichrolle mit Unverwundbarkeit.
+- Wucht: Trefferpause, Kamera-Stoß, Waffenspur, roter Bildrand bei eigenem Treffer, Vibration (Android), Rückstoß, doppeltes Blut bei harten Treffern.
+- Trefferzonen Kopf, Rumpf, Waffenarm, Bein mit Rüstung je Klasse und Ausrüstung.
+- KI in fünf Stufen: blockt, pariert, weicht aus, schlägt Kombos, bricht Dauerblocker mit dem Schildstoß, nutzt die Sonderfähigkeit ihrer Klasse.
+- Alle Kampfwerte in `src/data/combat.json`, Klassen in `src/data/classes.ts`.
+
+**Klassen, Ausrüstung, Schmied (Phase 4)**
+- Sechs Klassen mit eigener Ausrüstung im Code: Murmillo (Schildramme), Secutor (Verfolgung), Thraex (Hakenschlag um den Schild), Hoplomachus (Speerwurf), Retiarius (Netzwurf, kein Helm und Schild), Provocator (Herausforderung).
+- Klasse im Heldenmenü frei wählbar. Jede Klasse hat eigene Reichweite, Tempo, Blockkosten und Rüstung.
+- Ausrüstung in fünf Plätzen (Waffe, Schild, Helm, Armschutz, Beinschutz) und fünf Seltenheiten bis Legendär; die Metallfarbe zeigt die Seltenheit.
+- Nach jedem Sieg: Denare und ein Beutestück. Niederlagen bringen nichts.
+- Schmied: aufwerten bis +10 (ab +6 mit Risiko), Unnötiges zerlegen.
 
 **Mehrspieler (Phase 2)**
 - Hauptmenü: Training gegen die KI, Arena eröffnen, Arena beitreten.
@@ -64,13 +68,13 @@ Gebaut mit [Babylon.js 9](https://www.babylonjs.com), läuft komplett über GitH
 | Aktion | Schema A: Gesten | Schema B: Tasten |
 | --- | --- | --- |
 | Laufen | Linker Daumen ziehen | Linker Daumen ziehen |
-| Deckung wählen | Rechter Daumen nach oben/links/rechts schieben | ▲ ◀ ▶ |
-| Leichter Angriff | Rechts tippen | „Schlag“ tippen |
-| Schwerer Angriff | Rechts halten | „Schlag“ halten |
-| Parade | Schnell in die Angriffsrichtung wischen | „Parade“ im richtigen Moment |
-| Finte | Während des schweren Angriffs wischen | Während des schweren Angriffs „Parade“ |
-| Deckung brechen | Mit zwei Fingern tippen | „Faust“ |
-| Ausweichen | Nach unten wischen (Richtung mit dem Stick) | „Rolle“ |
+| Schlag / Kombo | Rechts tippen | „Schlag“ tippen |
+| Wuchtschlag | Rechts halten | „Schlag“ halten |
+| Block / Parade | „Block“ halten / im richtigen Moment drücken | „Block“ halten / im richtigen Moment drücken |
+| Schildstoß | Mit zwei Fingern tippen | „Stoß“ |
+| Ausweichen | Rechts wischen (in Wischrichtung) | „Rolle“ (Richtung mit dem Stick) |
+| Sonderfähigkeit | Klassentaste neben „Block“ | Klassentaste |
+| Publikum anheizen | ✊ oben links | ✊ oben links |
 | Aufschalten an/aus | ◎ oben rechts | ◎ oben rechts |
 
 ## Entwickeln

@@ -1,15 +1,14 @@
 {
-  "_info": "Kampfwerte. windup = Sekunden vom Angriffsbeginn bis zum Treffer (langsames Ausholen, dann schneller Schwung mit 'speed'). impact/recovery als Anteil der Animation. Richtung = Seite, von der der Angreifer zuschlägt (aus seiner Sicht).",
+  "_info": "Kampfwerte. windup = Sekunden vom Angriffsbeginn bis zum Treffer. Blocken: Taste halten, Richtung automatisch. Parade = Block innerhalb von parryWindow vor dem Treffer gedrückt.",
   "reach": 2.35,
   "maxAngle": 1.05,
-  "parryWindow": 0.34,
-  "parryMissLock": 0.42,
+  "parryWindow": 0.24,
   "staminaMax": 100,
   "staminaRegen": 20,
   "staminaDelay": 0.9,
   "exhaustTime": 2.4,
-  "blockStaminaFactor": 0.55,
-  "heavyChip": 0.12,
+  "blockStaminaFactor": 0.6,
+  "heavyChip": 0.25,
   "hpMax": 100,
   "lockRange": 9,
   "attacks": {
@@ -134,10 +133,6 @@
     "distance": 3.0,
     "iframes": 0.38
   },
-  "feint": {
-    "stamina": 9,
-    "latest": 0.18
-  },
   "parried": {
     "staggerTime": 1.0,
     "stamina": 20
@@ -145,59 +140,94 @@
   "ai": [
     {
       "name": "Rekrut",
-      "react": 0.65,
-      "block": 0.35,
+      "react": 0.6,
+      "block": 0.3,
       "parry": 0.0,
-      "aggression": 0.35,
-      "feint": 0.0,
-      "bash": 0.05,
       "dodge": 0.05,
-      "exploit": 0.2
+      "aggression": 0.35,
+      "combo": 0.2,
+      "heavy": 0.15,
+      "bash": 0.15,
+      "punish": 0.2
     },
     {
       "name": "Tiro",
-      "react": 0.48,
-      "block": 0.55,
-      "parry": 0.05,
-      "aggression": 0.5,
-      "feint": 0.05,
-      "bash": 0.1,
+      "react": 0.45,
+      "block": 0.45,
+      "parry": 0.06,
       "dodge": 0.1,
-      "exploit": 0.4
+      "aggression": 0.5,
+      "combo": 0.4,
+      "heavy": 0.2,
+      "bash": 0.3,
+      "punish": 0.4
     },
     {
       "name": "Veteran",
-      "react": 0.36,
-      "block": 0.72,
+      "react": 0.34,
+      "block": 0.5,
       "parry": 0.15,
-      "aggression": 0.6,
-      "feint": 0.12,
-      "bash": 0.18,
       "dodge": 0.15,
-      "exploit": 0.6
+      "aggression": 0.6,
+      "combo": 0.6,
+      "heavy": 0.25,
+      "bash": 0.5,
+      "punish": 0.6
     },
     {
       "name": "Champion",
-      "react": 0.27,
-      "block": 0.84,
-      "parry": 0.3,
+      "react": 0.26,
+      "block": 0.5,
+      "parry": 0.28,
+      "dodge": 0.18,
       "aggression": 0.7,
-      "feint": 0.2,
-      "bash": 0.25,
-      "dodge": 0.2,
-      "exploit": 0.75
+      "combo": 0.75,
+      "heavy": 0.3,
+      "bash": 0.7,
+      "punish": 0.8
     },
     {
       "name": "Primus Palus",
       "react": 0.2,
-      "block": 0.92,
-      "parry": 0.45,
+      "block": 0.45,
+      "parry": 0.42,
+      "dodge": 0.2,
       "aggression": 0.8,
-      "feint": 0.28,
-      "bash": 0.3,
-      "dodge": 0.25,
-      "exploit": 0.9
+      "combo": 0.9,
+      "heavy": 0.3,
+      "bash": 0.85,
+      "punish": 0.95
     }
   ],
-  "blockGrace": 0.1
+  "blockGrace": 0.1,
+  "blockAngle": 1.9,
+  "guardBreak": {
+    "stagger": 0.85,
+    "stamina": 25
+  },
+  "combo": {
+    "order": [
+      "light_right",
+      "light_left",
+      "light_top"
+    ],
+    "windup": [
+      0.5,
+      0.4,
+      0.48
+    ],
+    "damage": [
+      11,
+      11,
+      16
+    ],
+    "window": 0.9
+  },
+  "riposte": {
+    "window": 0.9,
+    "windupMul": 0.6,
+    "damageMul": 1.35
+  },
+  "heavyArmor": 0.4,
+  "blockMove": 0.0
 }

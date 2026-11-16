@@ -5,7 +5,9 @@ import {
   AnimationGroupMaskMode,
   AssetContainer,
   LoadAssetContainerAsync,
+  Color3,
   Mesh,
+  PBRMaterial,
   Quaternion,
   Scene,
   TransformNode,
@@ -16,14 +18,41 @@ import '@babylonjs/loaders/glTF';
 import type { Environment } from '../render/environment';
 import {
   buildBelt,
+  buildChestPlate,
+  buildGalerus,
   buildGladius,
   buildGreave,
   buildHelmet,
+  buildHelmetHoplomachus,
+  buildHelmetProvocator,
+  buildHelmetSecutor,
+  buildHelmetThraex,
   buildManica,
+  buildParma,
+  buildParmula,
+  buildProvocatorShield,
   buildScutum,
+  buildSica,
+  buildSpear,
+  buildTrident,
+  buildWraps,
   gearMaterials,
+  type GearMaterials,
   type Team,
 } from './gear';
+import { CLASSES, type ClassId } from '../data/classes';
+
+/** Aussehen: Klasse und Seltenheit je Platz [Waffe, Schild, Helm, Arme, Beine] */
+export interface Look {
+  cls: ClassId;
+  tiers: [number, number, number, number, number];
+}
+
+/** Metallfarben je Seltenheit: gewöhnlich, gut, selten, episch, legendär */
+const TIER_COLORS = {
+  bronze: [new Color3(0.42, 0.3, 0.17), new Color3(0.6, 0.36, 0.15), new Color3(0.66, 0.42, 0.18), new Color3(0.5, 0.3, 0.32), new Color3(0.88, 0.64, 0.22)],
+  iron: [new Color3(0.5, 0.48, 0.46), new Color3(0.72, 0.72, 0.74), new Color3(0.78, 0.8, 0.86), new Color3(0.62, 0.6, 0.72), new Color3(0.92, 0.8, 0.5)],
+};
 
 const BASE = import.meta.env.BASE_URL;
 
@@ -398,31 +427,30 @@ export class Gladiator {
     const bs = headY / 1.62; // Körpergrößen-Faktor
     const mat = gearMaterials(scene, env, team, id);
 
-    const attach = (mesh: Mesh, bone: string, pos: Vector3, yAxis: Vector3, zHint: Vector3) => {
+    /** Befestigungspunkt an einem Knochen: Y-Achse, Z-Hinweis und Lage im Ruhezustand */
+    const sockets = new Map<string, TransformNode>();
+    const socket = (name: string, bone: string, pos: Vector3, yAxis: Vector3, zHint: Vector3) => {
       const y = yAxis.normalize();
       const x = Vector3.Cross(y, zHint).normalize();
       const z = Vector3.Cross(x, y).normalize();
-      mesh.rotationQuaternion = Quaternion.RotationQuaternionFromAxis(x, y, z);
-      mesh.position = pos;
-      mesh.computeWorldMatrix(true);
-      mesh.setParent(need(bone));
-      env.addCaster(mesh);
-      meshes.push(mesh);
+      const t = new TransformNode(`${name}_${id}`, scene);
+      t.rotationQuaternion = Quaternion.RotationQuaternionFromAxis(x, y, z);
+      t.position = pos;
+      t.computeWorldMatrix(true);
+      t.setParent(need(bone));
+      sockets.set(name, t);
     };
-
-    // Schwert in der rechten Hand: Klinge zeigt von der Kleinfinger- zur Zeigefingerseite
+    const dims: Record<string, number> = { bs };
+    // Waffe in der rechten Hand: Klinge zeigt von der Kleinfinger- zur Zeigefingerseite
     {
       const hand = P('hand_r');
       const mid = P('middle_01_r');
-      const idx = P('index_01_r');
-      const pinky = P('pinky_01_r');
-      const across = idx.subtract(pinky).normalize();
+      const across = P('index_01_r').subtract(P('pinky_01_r')).normalize();
       const fingers = mid.subtract(hand).normalize();
       const palm = Vector3.Lerp(hand, mid, 0.75).add(fingers.scale(0.02 * bs));
-      const sword = buildGladius(scene, mat);
-      attach(sword, 'hand_r', palm, across, fingers);
+      socket('weapon', 'hand_r', palm, across, fingers);
     }
-    // Schild am linken Unterarm: Mitte am Griff in der Hand
+    // Schild am linken Unterarm
     {
       const fore = P('lowerarm_l');
       const hand = P('hand_l');
@@ -435,48 +463,47 @@ export class Gladiator {
       out = out.scale(-1); // Bemalte Seite nach außen (empirisch geprüft)
       const longAxis = Vector3.Cross(out, d).normalize();
       const center = Vector3.Lerp(hand, P('middle_01_l'), 0.4).add(out.scale(0.07 * bs));
-      const shield = buildScutum(scene, mat);
-      attach(shield, 'hand_l', center, longAxis, out);
+      socket('shield', 'hand_l', center, longAxis, out);
     }
     // Helm
     {
       const head = P('Head');
       const up = new Vector3(0, 1, 0);
-      const center = head.add(up.scale(0.115 * bs)).add(new Vector3(0, 0, -0.012 * bs));
-      const helmet = buildHelmet(scene, mat, bs * 0.86);
-      attach(helmet, 'Head', center, up, new Vector3(0, 0, 1));
+      socket('helmet', 'Head', head.add(up.scale(0.115 * bs)).add(new Vector3(0, 0, -0.012 * bs)), up, new Vector3(0, 0, 1));
     }
-    // Manica am rechten Arm (Unter- und Oberarm)
-    {
-      const lo = P('lowerarm_r');
-      const hand = P('hand_r');
-      const len = Vector3.Distance(lo, hand);
-      const dir = hand.subtract(lo).normalize();
-      const m1 = buildManica(scene, mat, len * 0.9, 0.05 * bs);
-      attach(m1, 'lowerarm_r', lo.add(dir.scale(0.02)), dir, new Vector3(0, 0, 1));
-      const ua = P('upperarm_r');
-      const len2 = Vector3.Distance(ua, lo);
+    // Arme (Unter- und Oberarm, beide Seiten)
+    for (const side of ['r', 'l']) {
+      const lo = P('lowerarm_' + side);
+      const hand = P('hand_' + side);
+      dims['fore_' + side] = Vector3.Distance(lo, hand);
+      socket('fore_' + side, 'lowerarm_' + side, lo.add(hand.subtract(lo).normalize().scale(0.02)), hand.subtract(lo), new Vector3(0, 0, 1));
+      const ua = P('upperarm_' + side);
+      dims['upper_' + side] = Vector3.Distance(ua, lo);
       const dir2 = lo.subtract(ua).normalize();
-      const m2 = buildManica(scene, mat, len2 * 0.75, 0.062 * bs);
-      attach(m2, 'upperarm_r', ua.add(dir2.scale(len2 * 0.2)), dir2, new Vector3(0, 0, 1));
+      socket('upper_' + side, 'upperarm_' + side, ua.add(dir2.scale(dims['upper_' + side] * 0.2)), dir2, new Vector3(0, 0, 1));
+      // Schulter: Galerus sitzt außen auf dem Oberarm
+      const outward = new Vector3(side === 'l' ? 1 : -1, 0, 0);
+      const sideX = Math.sign(ua.x - P('pelvis').x) || (side === 'l' ? 1 : -1);
+      socket('shoulder_' + side, 'upperarm_' + side, ua.add(new Vector3(sideX * 0.03 * bs, 0.03 * bs, 0)), new Vector3(0, 1, 0), new Vector3(sideX, 0, 0));
+      void outward;
     }
-    // Beinschiene links
-    {
-      const knee = P('calf_l');
-      const foot = P('foot_l');
-      const len = Vector3.Distance(knee, foot);
+    // Beine
+    for (const side of ['l', 'r']) {
+      const knee = P('calf_' + side);
+      const foot = P('foot_' + side);
+      dims['shin_' + side] = Vector3.Distance(knee, foot);
       const up = knee.subtract(foot).normalize();
-      const greave = buildGreave(scene, mat, len * 0.82, 0.062 * bs);
-      attach(greave, 'calf_l', knee.subtract(up.scale(0.05 * bs)), up, new Vector3(0, 0, 1));
+      socket('shin_' + side, 'calf_' + side, knee.subtract(up.scale(0.05 * bs)), up, new Vector3(0, 0, 1));
     }
-    // Gürtel
+    // Gürtel und Brust
     {
       const pelvis = P('pelvis');
       const spine = P('spine_01');
-      const center = Vector3.Lerp(pelvis, spine, 0.6);
-      const belt = buildBelt(scene, mat, 0.165 * bs, 0.125 * bs);
-      attach(belt, 'pelvis', center, spine.subtract(pelvis), new Vector3(0, 0, 1));
+      socket('belt', 'pelvis', Vector3.Lerp(pelvis, spine, 0.6), spine.subtract(pelvis), new Vector3(0, 0, 1));
+      const chest = P('spine_03');
+      socket('chest', 'spine_03', chest.add(new Vector3(0, -0.02 * bs, 0.13 * bs)), new Vector3(0, 1, 0), new Vector3(0, 0, 1));
     }
+    const hair = meshes.filter((m) => (m.material?.name ?? '').includes('Hair'));
 
     // Animationen auf diese Figur übertragen
     const groups = new Map<string, AnimationGroup>();
@@ -495,6 +522,14 @@ export class Gladiator {
     const chest = P('spine_03').y;
     const g = new Gladiator(wrapper, animator, id, chest);
     g.nodes = nodes;
+    g.sockets = sockets;
+    g.dims = dims;
+    g.mat = mat;
+    g.env = env;
+    g.scene = scene;
+    g.hair = hair;
+    g.body = meshes.slice();
+    g.equip({ cls: 'murmillo', tiers: [1, 1, 1, 1, 1] });
     g.align = align;
     g.baseAlignYaw = align.rotation.y;
 
@@ -552,13 +587,121 @@ export class Gladiator {
     (window as unknown as Record<string, unknown>)['__pose_' + id] = () => {
       const w = (n: string) => need(n).getAbsolutePosition();
       const toe = w('ball_l').subtract(w('foot_l'));
-      const helm = meshes.find((m) => m.name === 'helmet')!;
+      const helm = g.meshes.find((m) => m.name === 'helmet') ?? meshes[0];
       const hf = Vector3.TransformNormal(new Vector3(0, 0, 1), helm.getWorldMatrix());
       const body = meshes.find((m) => m.name === 'SuperHero_Male')!;
       return { toe: toe.toString(), helmFwd: hf.toString(), bodyWorldDet: body.getWorldMatrix().determinant(), bodyParent: body.parent?.name, alignRot: align.rotation.y, handR: w('hand_r').toString(), headPos: w('Head').toString() };
     };
-    g.meshes = meshes;
     return g;
+  }
+
+  /* ---------- Ausrüstung ---------- */
+
+  sockets = new Map<string, TransformNode>();
+  dims: Record<string, number> = {};
+  mat!: GearMaterials;
+  env!: Environment;
+  scene!: Scene;
+  hair: AbstractMesh[] = [];
+  body: AbstractMesh[] = [];
+  private gear: Mesh[] = [];
+  private tierMats = new Map<string, PBRMaterial>();
+  /** Spitze der Waffe (für die Waffenspur) */
+  tip: TransformNode | null = null;
+  look: Look | null = null;
+
+  private metal(kind: 'bronze' | 'iron', tier: number): PBRMaterial {
+    const key = kind + tier;
+    let m = this.tierMats.get(key);
+    if (!m) {
+      const base = kind === 'bronze' ? this.mat.bronze : this.mat.iron;
+      m = base.clone(`${base.name}_t${tier}`, false) as PBRMaterial;
+      // Texturen teilen (geklonte Canvas-Texturen wären leer)
+      m.albedoTexture = base.albedoTexture;
+      m.reflectionTexture = base.reflectionTexture;
+      m.backFaceCulling = false;
+      m.albedoColor = TIER_COLORS[kind][Math.max(0, Math.min(4, tier))].clone();
+      m.roughness = Math.max(0.15, (base.roughness ?? 0.3) - tier * 0.03);
+      this.tierMats.set(key, m);
+    }
+    return m;
+  }
+
+  /** Ausrüstung nach Klasse und Seltenheit anlegen (alte Teile werden entfernt) */
+  equip(look: Look): void {
+    const same = this.look && this.look.cls === look.cls && this.look.tiers.join() === look.tiers.join();
+    if (same) return;
+    this.look = { cls: look.cls, tiers: [...look.tiers] as Look['tiers'] };
+    for (const m of this.gear) m.dispose(false, false);
+    this.gear = [];
+    const def = CLASSES[look.cls];
+    const [tw, tsh, th, ta, tl] = look.tiers;
+    const bs = this.dims.bs;
+    const sc = this.scene;
+    const withMetal = (tier: number): GearMaterials => ({ ...this.mat, bronze: this.metal('bronze', tier), iron: this.metal('iron', tier) });
+    const put = (mesh: Mesh, sock: string, offset?: Vector3) => {
+      mesh.parent = this.sockets.get(sock)!;
+      mesh.position = offset ?? Vector3.Zero();
+      mesh.rotationQuaternion = null;
+      mesh.rotation.setAll(0);
+      mesh.receiveShadows = true;
+      this.env.addCaster(mesh);
+      this.gear.push(mesh);
+      for (const c of mesh.getChildMeshes()) {
+        this.env.addCaster(c as Mesh);
+        this.gear.push(c as Mesh);
+      }
+      return mesh;
+    };
+    // Waffe
+    const wm = withMetal(tw);
+    const weapon =
+      def.weapon === 'sica' ? buildSica(sc, wm) : def.weapon === 'spear' ? buildSpear(sc, wm) : def.weapon === 'trident' ? buildTrident(sc, wm) : buildGladius(sc, wm);
+    put(weapon, 'weapon');
+    if (!this.tip) this.tip = new TransformNode('tip_' + this.id, sc);
+    this.tip.parent = weapon;
+    this.tip.position.setAll(0);
+    this.tip.position.y = def.weapon === 'spear' ? 1.45 : def.weapon === 'trident' ? 1.4 : 0.55;
+    // Schild
+    const sm = withMetal(tsh);
+    if (def.shield === 'scutum') put(look.cls === 'provocator' ? buildProvocatorShield(sc, sm) : buildScutum(sc, sm), 'shield');
+    else if (def.shield === 'parmula') put(buildParmula(sc, sm), 'shield');
+    else if (def.shield === 'parma') put(buildParma(sc, sm), 'shield');
+    // Helm
+    const hm = withMetal(th);
+    const hs = bs * 0.86;
+    const helmet =
+      def.helmet === 'murmillo'
+        ? buildHelmet(sc, hm, hs)
+        : def.helmet === 'secutor'
+          ? buildHelmetSecutor(sc, hm, hs)
+          : def.helmet === 'thraex'
+            ? buildHelmetThraex(sc, hm, hs)
+            : def.helmet === 'hoplomachus'
+              ? buildHelmetHoplomachus(sc, hm, hs)
+              : def.helmet === 'provocator'
+                ? buildHelmetProvocator(sc, hm, hs)
+                : null;
+    if (helmet) put(helmet, 'helmet');
+    for (const h of this.hair) h.setEnabled(!helmet);
+    // Arme: Manica am Waffenarm (Retiarius: links, dazu der Galerus)
+    const am = withMetal(ta);
+    const armSide = look.cls === 'retiarius' ? 'l' : 'r';
+    put(buildManica(sc, am, this.dims['fore_' + armSide] * 0.9, 0.05 * bs), 'fore_' + armSide);
+    put(buildManica(sc, am, this.dims['upper_' + armSide] * 0.75, 0.062 * bs), 'upper_' + armSide);
+    if (look.cls === 'retiarius') put(buildGalerus(sc, am, bs), 'shoulder_l');
+    if (look.cls === 'provocator') put(buildChestPlate(sc, am, bs), 'chest');
+    // Beine
+    const lm = withMetal(tl);
+    if (look.cls === 'retiarius') {
+      for (const sd of ['l', 'r']) put(buildWraps(sc, lm, this.dims['shin_' + sd] * 0.5, 0.06 * bs), 'shin_' + sd);
+    } else {
+      const both = look.cls === 'thraex' || look.cls === 'hoplomachus';
+      const len = both ? 0.95 : 0.82;
+      for (const sd of both ? ['l', 'r'] : ['l']) put(buildGreave(sc, lm, this.dims['shin_' + sd] * len, 0.062 * bs), 'shin_' + sd, new Vector3(0, both ? 0.06 * bs : 0, 0));
+    }
+    put(buildBelt(sc, this.mat, 0.165 * bs, 0.125 * bs), 'belt');
+    this.meshes = [...this.body, ...this.gear];
   }
 
   /** Nach den Animationen: Beine in Laufrichtung, Oberkörper bleibt zum Gegner gerichtet */

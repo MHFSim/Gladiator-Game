@@ -1,13 +1,12 @@
 import type { Scheme } from '../core/settings';
-import type { Dir } from '../game/fighter';
 
 export type Action =
   | { type: 'light' }
   | { type: 'heavy' }
-  | { type: 'guard'; dir: Dir }
-  | { type: 'parry'; dir?: Dir }
+  | { type: 'block'; on: boolean }
   | { type: 'bash' }
   | { type: 'roll'; dir: 'left' | 'right' | 'back' | 'forward' | 'stick' }
+  | { type: 'special' }
   | { type: 'lock' }
   | { type: 'cheer' };
 
@@ -20,19 +19,17 @@ interface RightTouch {
   moved: boolean; // als Richtungs- oder Kamerazug erkannt
   heavyFired: boolean;
   multi: boolean; // Teil einer Zwei-Finger-Geste
-  lastGuard: Dir | null;
 }
 
 const HOLD_MS = 300;
-const FLICK_MS = 200;
+const FLICK_MS = 220;
 
 /**
  * Touch-Steuerung für das Querformat.
  * Linke Hälfte: schwebender Stick.
- * Rechte Hälfte, Schema A (aufgeschaltet): Daumen schieben = Deckung (oben/links/rechts), tippen = leichter Angriff,
- * halten = schwerer Angriff, schnell wischen = Parade in diese Richtung, nach unten wischen = Ausweichen,
- * zwei Finger tippen = Deckung brechen. Nicht aufgeschaltet: ziehen = Kamera.
- * Schema B: Tasten im HUD, rechte freie Fläche = Kamera.
+ * Schema A (Gesten), rechte Hälfte: tippen = Schlag (Kombo), halten = Wuchtschlag, wischen = Ausweichen
+ * in diese Richtung, zwei Finger = Schildstoß. Block und Spezial sind Tasten.
+ * Schema B: alle Aktionen als Tasten, rechte freie Fläche = Kamera.
  */
 export class TouchInput {
   move = { x: 0, y: 0 };
@@ -77,15 +74,16 @@ export class TouchInput {
       const k = e.key.toLowerCase();
       if (e.repeat) return;
       keys.add(k);
+      if (k === 'l') {
+        this.push({ type: 'block', on: true });
+        return;
+      }
       const map: Record<string, Action> = {
         j: { type: 'light' },
         k: { type: 'heavy' },
-        i: { type: 'guard', dir: 'top' },
-        u: { type: 'guard', dir: 'left' },
-        o: { type: 'guard', dir: 'right' },
-        l: { type: 'parry' },
         ' ': { type: 'roll', dir: 'stick' },
         e: { type: 'bash' },
+        q: { type: 'special' },
         tab: { type: 'lock' },
       };
       if (map[k]) {
@@ -95,6 +93,7 @@ export class TouchInput {
       updateKeys();
     });
     window.addEventListener('keyup', (e) => {
+      if (e.key.toLowerCase() === 'l') this.push({ type: 'block', on: false });
       keys.delete(e.key.toLowerCase());
       updateKeys();
     });
@@ -121,10 +120,9 @@ export class TouchInput {
     return x < window.innerWidth * 0.45;
   }
 
-  /** Richtung eines Zugs: oben, links, rechts oder unten */
-  private static dirOf(dx: number, dy: number): Dir | 'down' {
-    if (dy < 0 && -dy > Math.abs(dx) * 0.75) return 'top';
-    if (dy > 0 && dy > Math.abs(dx) * 1.2) return 'down';
+  /** Richtung eines Wischers */
+  private static dirOf(dx: number, dy: number): 'forward' | 'back' | 'left' | 'right' {
+    if (Math.abs(dy) > Math.abs(dx)) return dy < 0 ? 'forward' : 'back';
     return dx < 0 ? 'left' : 'right';
   }
 
@@ -145,13 +143,13 @@ export class TouchInput {
       return;
     }
     const now = performance.now();
-    const t: RightTouch = { x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY, t0: now, moved: false, heavyFired: false, multi: false, lastGuard: null };
+    const t: RightTouch = { x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY, t0: now, moved: false, heavyFired: false, multi: false };
     this.right.set(e.pointerId, t);
     if (!this.gestureMode) {
       t.moved = true; // Schema B: rechte Fläche nur Kamera
       return;
     }
-    // Zwei Finger kurz hintereinander = Deckung brechen
+    // Zwei Finger kurz hintereinander = Schildstoß
     if (this.right.size === 2) {
       const others = [...this.right.values()];
       if (others.every((o) => !o.moved && now - o.t0 < 260)) {
@@ -201,15 +199,10 @@ export class TouchInput {
     const dy = p.y - p.y0;
     const dist = Math.hypot(dx, dy);
     if (this.gestureMode && this.locked) {
-      // Deckung über die Zugrichtung
+      // Aufgeschaltet: Zug wird zum Wischer (Ausweichen), keine Kamera
       if (dist > 22) {
         p.moved = true;
         this.clearHold();
-        const d = TouchInput.dirOf(dx, dy);
-        if (d !== 'down' && d !== p.lastGuard) {
-          p.lastGuard = d;
-          this.push({ type: 'guard', dir: d });
-        }
       }
       return;
     }
@@ -247,11 +240,8 @@ export class TouchInput {
       this.push({ type: age < HOLD_MS ? 'light' : 'heavy' });
       return;
     }
-    if (age < FLICK_MS && dist > 50) {
-      const d = TouchInput.dirOf(dx, dy);
-      if (d === 'down') this.push({ type: 'roll', dir: 'stick' });
-      else if (this.locked) this.push({ type: 'parry', dir: d });
-      else if (d === 'left' || d === 'right') this.push({ type: 'roll', dir: d });
+    if ((age < FLICK_MS * 1.6 || this.locked) && dist > 40) {
+      this.push({ type: 'roll', dir: TouchInput.dirOf(dx, dy) });
     }
   }
 }
@@ -298,13 +288,26 @@ export function bindButtons(root: HTMLElement, input: TouchInput): void {
   attack.addEventListener('pointercancel', attackUp);
   attack.addEventListener('pointerleave', attackUp);
 
-  for (const d of ['top', 'left', 'right'] as Dir[]) {
-    const b = btn(`#btn-g-${d}`);
-    if (b) press(b, () => input.push({ type: 'guard', dir: d }));
-  }
-  press(btn('#btn-parry')!, () => input.push({ type: 'parry' }));
   press(btn('#btn-bash')!, () => input.push({ type: 'bash' }));
   press(btn('#btn-roll')!, () => input.push({ type: 'roll', dir: 'stick' }));
+  // Block: halten (gilt in beiden Schemata)
+  const block = document.getElementById('btn-block') as HTMLButtonElement;
+  block.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    block.classList.add('pressed');
+    input.push({ type: 'block', on: true });
+  });
+  const blockUp = () => {
+    if (!block.classList.contains('pressed')) return;
+    block.classList.remove('pressed');
+    input.push({ type: 'block', on: false });
+  };
+  block.addEventListener('pointerup', blockUp);
+  block.addEventListener('pointercancel', blockUp);
+  block.addEventListener('pointerleave', blockUp);
+  const special = document.getElementById('btn-special') as HTMLButtonElement | null;
+  if (special) press(special, () => input.push({ type: 'special' }));
   const lock = document.getElementById('btn-lock') as HTMLButtonElement | null;
   if (lock) press(lock, () => input.push({ type: 'lock' }));
 }

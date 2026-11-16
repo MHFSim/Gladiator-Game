@@ -398,3 +398,432 @@ export function buildBelt(scene: Scene, m: GearMaterials, rx: number, rz: number
   mesh.name = 'belt';
   return mesh;
 }
+
+/* ======================================================================
+ * Klassen-Ausrüstung (Phase 4)
+ * ====================================================================== */
+
+/** Flache, beidseitige Klinge entlang +Y aus Querschnitten [y, Breite, x-Versatz] */
+function bladeFrom(scene: Scene, name: string, sections: [number, number, number][], th: number, mat: PBRMaterial): Mesh {
+  const g = new GeoBuilder();
+  for (let k = 0; k < sections.length - 1; k++) {
+    const [y0, w0, o0] = sections[k];
+    const [y1, w1, o1] = sections[k + 1];
+    for (const sx of [-1, 1]) {
+      for (const sz of [-1, 1]) {
+        const p0 = new Vector3(o0, y0, sz * th);
+        const p1 = new Vector3(o0 + (sx * w0) / 2, y0, 0);
+        const p2 = new Vector3(o1 + (sx * w1) / 2, y1, 0);
+        const p3 = new Vector3(o1, y1, sz * th * (w1 > 0 ? 1 : 0));
+        const n = Vector3.Cross(p1.subtract(p0), p3.subtract(p0)).normalize();
+        if (n.z * sz < 0) n.scaleInPlace(-1);
+        const a = g.vertex(p0, n, 0.5, y0);
+        const b = g.vertex(p1, n, 0.5 + sx * 0.5, y0);
+        const c = g.vertex(p2, n, 0.5 + sx * 0.5, y1);
+        const d = g.vertex(p3, n, 0.5, y1);
+        g.quad(a, b, c, d);
+      }
+    }
+  }
+  const mesh = g.build(name, scene);
+  mesh.material = mat;
+  return mesh;
+}
+
+function merged(name: string, parts: Mesh[]): Mesh {
+  const m = Mesh.MergeMeshes(parts, true, true, undefined, false, true) as Mesh;
+  m.name = name;
+  m.receiveShadows = true;
+  return m;
+}
+
+/** Sica: kurze, gebogene Klinge der Thraker */
+export function buildSica(scene: Scene, m: GearMaterials): Mesh {
+  const secs: [number, number, number][] = [];
+  for (let i = 0; i <= 8; i++) {
+    const t = i / 8;
+    const y = 0.07 + t * 0.48;
+    const w = 0.05 * (1 - t * 0.85) + 0.006;
+    const off = -0.16 * t * t; // Krümmung nach vorn
+    secs.push([y, i === 8 ? 0 : w, off]);
+  }
+  const blade = bladeFrom(scene, 'sicaBlade', secs, 0.008, m.iron);
+  const grip = MeshBuilder.CreateCylinder('grip', { height: 0.1, diameter: 0.032, tessellation: 10 }, scene);
+  grip.material = m.wood;
+  const guard = MeshBuilder.CreateBox('guard', { width: 0.07, height: 0.022, depth: 0.045 }, scene);
+  guard.position.y = 0.06;
+  guard.material = m.bronze;
+  const pommel = MeshBuilder.CreateSphere('pommel', { diameter: 0.045, segments: 8 }, scene);
+  pommel.position.y = -0.062;
+  pommel.material = m.bronze;
+  return merged('sica', [blade, grip, guard, pommel]);
+}
+
+/** Speer (Hasta): Griff in der Hand, Spitze weit vorn */
+export function buildSpear(scene: Scene, m: GearMaterials): Mesh {
+  const shaft = MeshBuilder.CreateCylinder('shaft', { height: 1.95, diameter: 0.032, tessellation: 8 }, scene);
+  shaft.position.y = 0.35;
+  shaft.material = m.wood;
+  const head = bladeFrom(scene, 'spearHead', [
+    [1.3, 0.012, 0],
+    [1.36, 0.06, 0],
+    [1.5, 0.0, 0],
+  ], 0.01, m.iron);
+  const butt = MeshBuilder.CreateCylinder('butt', { height: 0.08, diameterTop: 0.036, diameterBottom: 0.02, tessellation: 8 }, scene);
+  butt.position.y = -0.66;
+  butt.material = m.bronze;
+  return merged('spear', [shaft, head, butt]);
+}
+
+/** Dreizack (Fuscina) */
+export function buildTrident(scene: Scene, m: GearMaterials): Mesh {
+  const shaft = MeshBuilder.CreateCylinder('shaft', { height: 1.75, diameter: 0.034, tessellation: 8 }, scene);
+  shaft.position.y = 0.3;
+  shaft.material = m.wood;
+  const parts: Mesh[] = [shaft];
+  const bar = MeshBuilder.CreateBox('bar', { width: 0.2, height: 0.025, depth: 0.025 }, scene);
+  bar.position.y = 1.18;
+  bar.material = m.iron;
+  parts.push(bar);
+  for (const x of [-0.09, 0, 0.09]) {
+    const prong = MeshBuilder.CreateCylinder('prong', { height: x === 0 ? 0.3 : 0.24, diameterTop: 0.004, diameterBottom: 0.018, tessellation: 6 }, scene);
+    prong.position.set(x, 1.18 + (x === 0 ? 0.15 : 0.12), 0);
+    prong.material = m.iron;
+    parts.push(prong);
+    const barb = MeshBuilder.CreateCylinder('barb', { height: 0.05, diameterTop: 0.003, diameterBottom: 0.014, tessellation: 5 }, scene);
+    barb.position.set(x + (x <= 0 ? 0.012 : -0.012), 1.18 + (x === 0 ? 0.25 : 0.2), 0);
+    barb.rotation.z = x <= 0 ? -0.6 : 0.6;
+    barb.material = m.iron;
+    parts.push(barb);
+  }
+  return merged('trident', parts);
+}
+
+/** Gewölbter Rechteckschild beliebiger Größe (Front bemalt, Rand Bronze) */
+function curvedShield(scene: Scene, m: GearMaterials, W: number, H: number, k: number, name: string): Mesh {
+  const t = 0.02;
+  const seg = 12;
+  const gF = new GeoBuilder();
+  const gB = new GeoBuilder();
+  const gE = new GeoBuilder();
+  const zAt = (x: number) => -k * x * x;
+  const front: number[][] = [];
+  const back: number[][] = [];
+  for (let i = 0; i <= seg; i++) {
+    const x = -W / 2 + (W * i) / seg;
+    const z = zAt(x);
+    const n = new Vector3(2 * k * x, 0, 1).normalize();
+    const rowF: number[] = [];
+    const rowB: number[] = [];
+    for (const [j, y] of [-H / 2, H / 2].entries()) {
+      rowF.push(gF.vertex(new Vector3(x, y, z), n, i / seg, j));
+      rowB.push(gB.vertex(new Vector3(x, y, z - t), n.scale(-1), (i / seg) * 2, j * 3));
+    }
+    front.push(rowF);
+    back.push(rowB);
+  }
+  for (let i = 0; i < seg; i++) {
+    gF.quad(front[i][0], front[i + 1][0], front[i + 1][1], front[i][1]);
+    gB.quad(back[i][0], back[i + 1][0], back[i + 1][1], back[i][1]);
+  }
+  for (let i = 0; i < seg; i++) {
+    const x0 = -W / 2 + (W * i) / seg;
+    const x1 = x0 + W / seg;
+    for (const y of [-H / 2, H / 2]) {
+      const n = new Vector3(0, Math.sign(y), 0);
+      const a = gE.vertex(new Vector3(x0, y, zAt(x0) + 0.006), n, 0, 0);
+      const b = gE.vertex(new Vector3(x1, y, zAt(x1) + 0.006), n, 1, 0);
+      const c = gE.vertex(new Vector3(x1, y, zAt(x1) - t - 0.006), n, 1, 1);
+      const d = gE.vertex(new Vector3(x0, y, zAt(x0) - t - 0.006), n, 0, 1);
+      gE.quad(a, b, c, d);
+    }
+  }
+  for (const x of [-W / 2, W / 2]) {
+    const n = new Vector3(Math.sign(x), 0, 0);
+    const z = zAt(x);
+    const a = gE.vertex(new Vector3(x, -H / 2, z + 0.006), n, 0, 0);
+    const b = gE.vertex(new Vector3(x, H / 2, z + 0.006), n, 1, 0);
+    const c = gE.vertex(new Vector3(x, H / 2, z - t - 0.006), n, 1, 1);
+    const d = gE.vertex(new Vector3(x, -H / 2, z - t - 0.006), n, 0, 1);
+    gE.quad(a, b, c, d);
+  }
+  const f = finalize(gF.build(name + 'Front', scene), m.shieldFront);
+  const b = finalize(gB.build(name + 'Back', scene), m.wood);
+  const e = finalize(gE.build(name + 'Rim', scene), m.bronze);
+  const boss = MeshBuilder.CreateSphere('boss', { diameter: Math.min(W, H) * 0.3, slice: 0.5, segments: 12 }, scene);
+  boss.rotation.x = Math.PI / 2;
+  boss.scaling.y = 0.55;
+  boss.material = m.bronze;
+  return merged(name, [f, b, e, boss]);
+}
+
+/** Parmula: kleiner, fast quadratischer Schild des Thraex */
+export function buildParmula(scene: Scene, m: GearMaterials): Mesh {
+  return curvedShield(scene, m, 0.42, 0.5, 0.9, 'parmula');
+}
+
+/** Kleiner Rechteckschild des Provocator */
+export function buildProvocatorShield(scene: Scene, m: GearMaterials): Mesh {
+  return curvedShield(scene, m, 0.52, 0.78, 1.0, 'provShield');
+}
+
+/** Parma: kleiner, gewölbter Rundschild des Hoplomachus */
+export function buildParma(scene: Scene, m: GearMaterials): Mesh {
+  const R = 0.3;
+  const g = new GeoBuilder();
+  const prof: [number, number][] = [];
+  for (let i = 0; i <= 8; i++) {
+    const t = i / 8;
+    prof.push([R * t, 0.07 * (1 - t * t)]);
+  }
+  // Drehkörper um die Z-Achse: lathe arbeitet um Y, daher danach drehen
+  lathe(g, prof.map(([r, y]) => [r, y] as [number, number]), 0, Math.PI * 2, 28);
+  const front = g.build('parmaFront', scene);
+  front.material = m.bronze;
+  front.rotation.x = Math.PI / 2;
+  const rim = MeshBuilder.CreateTorus('parmaRim', { diameter: R * 2, thickness: 0.025, tessellation: 32 }, scene);
+  rim.rotation.x = Math.PI / 2;
+  rim.material = m.bronze;
+  const boss = MeshBuilder.CreateSphere('boss', { diameter: 0.09, slice: 0.5, segments: 10 }, scene);
+  boss.rotation.x = Math.PI / 2;
+  boss.position.z = 0.06;
+  boss.material = m.iron;
+  const back = MeshBuilder.CreateDisc('parmaBack', { radius: R, tessellation: 28, sideOrientation: Mesh.BACKSIDE }, scene);
+  back.material = m.wood;
+  return merged('parma', [front, rim, boss, back]);
+}
+
+/** Helmschale mit offenem Gesicht */
+function helmShell(scene: Scene, m: GearMaterials, s: number, opts: { egg?: boolean; brim?: number; open?: number; neck?: boolean }): Mesh {
+  const egg = opts.egg ? 1.18 : 1;
+  const dome: [number, number][] = [
+    [0.0, 0.165 * egg],
+    [0.07, 0.155 * egg],
+    [0.12, 0.125 * egg],
+    [0.15, 0.075],
+    [0.162, 0.02],
+  ];
+  const lower: [number, number][] = [
+    [0.162, 0.02],
+    [0.165, -0.05],
+    [0.158, -0.115],
+  ];
+  const sc = (p: [number, number][]) => p.map(([r, y]) => [r * s, y * s] as [number, number]);
+  const g = new GeoBuilder();
+  lathe(g, sc(dome), 0, Math.PI * 2, 30);
+  const open = ((opts.open ?? 68) * Math.PI) / 180;
+  lathe(g, sc(lower), open, Math.PI * 2 - open, 24);
+  if (opts.brim) {
+    const b = opts.brim;
+    lathe(g, sc([
+      [0.158, -0.115],
+      [0.158 + b * 0.5, -0.12],
+      [0.158 + b, -0.14],
+      [0.162 + b, -0.15],
+    ]), open * 0.85, Math.PI * 2 - open * 0.85, 26);
+  }
+  if (opts.neck) {
+    // Nackenschutz
+    lathe(g, sc([
+      [0.158, -0.115],
+      [0.2, -0.16],
+      [0.23, -0.19],
+    ]), Math.PI - 1.2, Math.PI + 1.2, 16);
+  }
+  lathe(g, sc([
+    [0.166, 0.03],
+    [0.168, 0.0],
+  ]), -open, open, 12);
+  const shell = finalize(g.build('helmShell', scene), m.bronze);
+  shell.material!.backFaceCulling = false;
+  return shell;
+}
+
+/** Kamm über den Scheitel; hook > 0 biegt die Spitze nach vorn (Greif) */
+function crest(scene: Scene, m: GearMaterials, s: number, height: number, hook: number): Mesh {
+  const g = new GeoBuilder();
+  const steps = 14;
+  const fin: [number, number][] = [];
+  for (let i = 0; i <= steps; i++) {
+    const a = -1.0 + (i / steps) * 2.3;
+    const rBase = 0.155 * s;
+    fin.push([Math.cos(a + Math.PI / 2) * -rBase, Math.sin(a + Math.PI / 2) * rBase]);
+  }
+  const top: [number, number][] = fin.map(([z, y], i) => {
+    const t = i / steps;
+    const h = (0.03 + Math.sin(t * Math.PI) * height + (1 - t) * hook) * s;
+    const len = Math.hypot(z, y);
+    return [z + (z / len) * h + (1 - t) * (1 - t) * hook * 0.6 * s, y + (y / len) * h];
+  });
+  const th = 0.012 * s;
+  for (const side of [-1, 1]) {
+    const n = new Vector3(side, 0, 0);
+    for (let i = 0; i < steps; i++) {
+      const a = g.vertex(new Vector3(side * th, fin[i][1], fin[i][0]), n, 0, 0);
+      const b = g.vertex(new Vector3(side * th, fin[i + 1][1], fin[i + 1][0]), n, 1, 0);
+      const c = g.vertex(new Vector3(side * th, top[i + 1][1], top[i + 1][0]), n, 1, 1);
+      const d = g.vertex(new Vector3(side * th, top[i][1], top[i][0]), n, 0, 1);
+      g.quad(a, b, c, d);
+    }
+  }
+  for (let i = 0; i < steps; i++) {
+    const p0 = new Vector3(0, top[i][1], top[i][0]);
+    const p1 = new Vector3(0, top[i + 1][1], top[i + 1][0]);
+    const n = new Vector3(0, p1.z - p0.z, -(p1.y - p0.y)).normalize();
+    if (n.y < 0) n.scaleInPlace(-1);
+    const a = g.vertex(new Vector3(-th, p0.y, p0.z), n, 0, 0);
+    const b = g.vertex(new Vector3(th, p0.y, p0.z), n, 1, 0);
+    const c = g.vertex(new Vector3(th, p1.y, p1.z), n, 1, 1);
+    const d = g.vertex(new Vector3(-th, p1.y, p1.z), n, 0, 1);
+    g.quad(a, b, c, d);
+  }
+  return finalize(g.build('crest', scene), m.bronze);
+}
+
+/** Secutor: glatter, eiförmiger Helm mit niedriger runder Finne */
+export function buildHelmetSecutor(scene: Scene, m: GearMaterials, s: number): Mesh {
+  const shell = helmShell(scene, m, s, { egg: true, open: 58, neck: true });
+  const fin = crest(scene, m, s, 0.035, 0);
+  return merged('helmet', [shell, fin]);
+}
+
+/** Thraex: Krempe, hoher Kamm mit nach vorn gebogenem Greifenkopf, Federn */
+export function buildHelmetThraex(scene: Scene, m: GearMaterials, s: number): Mesh {
+  const shell = helmShell(scene, m, s, { brim: 0.07, open: 66 });
+  const fin = crest(scene, m, s, 0.1, 0.07);
+  const parts = [shell, fin];
+  for (const side of [-1, 1]) {
+    const f = MeshBuilder.CreateBox('feather', { width: 0.012 * s, height: 0.22 * s, depth: 0.05 * s }, scene);
+    f.position.set(side * 0.15 * s, 0.13 * s, -0.01 * s);
+    f.rotation.z = -side * 0.25;
+    f.material = m.plume;
+    parts.push(f);
+  }
+  return merged('helmet', parts);
+}
+
+/** Hoplomachus: Krempe, Federbusch und zwei hohe Federn */
+export function buildHelmetHoplomachus(scene: Scene, m: GearMaterials, s: number): Mesh {
+  const shell = helmShell(scene, m, s, { brim: 0.06, open: 66 });
+  const parts = [shell];
+  const tufts: Mesh[] = [];
+  for (let i = 0; i < 9; i++) {
+    const t = i / 8;
+    const a = -0.6 + t * 1.6;
+    const tuft = MeshBuilder.CreateSphere('tuft', { diameterX: 0.05 * s, diameterY: 0.1 * s, diameterZ: 0.07 * s, segments: 8 }, scene);
+    tuft.position.set(0, Math.cos(a) * 0.19 * s, -Math.sin(a) * 0.19 * s);
+    tuft.rotation.x = -a;
+    tufts.push(tuft);
+  }
+  const plume = Mesh.MergeMeshes(tufts, true, true) as Mesh;
+  plume.material = m.plume;
+  parts.push(plume);
+  for (const side of [-1, 1]) {
+    const f = MeshBuilder.CreateBox('feather', { width: 0.012 * s, height: 0.32 * s, depth: 0.05 * s }, scene);
+    f.position.set(side * 0.16 * s, 0.17 * s, 0);
+    f.rotation.z = -side * 0.18;
+    f.material = m.plume;
+    parts.push(f);
+  }
+  return merged('helmet', parts);
+}
+
+/** Provocator: Helm mit Nackenschutz und Wangenklappen, ohne Kamm */
+export function buildHelmetProvocator(scene: Scene, m: GearMaterials, s: number): Mesh {
+  const shell = helmShell(scene, m, s, { open: 62, neck: true });
+  const parts = [shell];
+  for (const side of [-1, 1]) {
+    const cheek = MeshBuilder.CreateBox('cheek', { width: 0.012 * s, height: 0.12 * s, depth: 0.09 * s }, scene);
+    cheek.position.set(side * 0.155 * s, -0.08 * s, 0.07 * s);
+    cheek.rotation.y = side * 0.35;
+    cheek.material = m.bronze;
+    parts.push(cheek);
+  }
+  const knob = MeshBuilder.CreateSphere('knob', { diameter: 0.04 * s, segments: 8 }, scene);
+  knob.position.y = 0.17 * s;
+  knob.material = m.bronze;
+  parts.push(knob);
+  return merged('helmet', parts);
+}
+
+/** Galerus: Schulterschutz des Retiarius (lokales Y = Oberarm abwärts, Z = außen) */
+export function buildGalerus(scene: Scene, m: GearMaterials, s: number): Mesh {
+  const g = new GeoBuilder();
+  const W = 0.2 * s;
+  const H = 0.24 * s;
+  const seg = 8;
+  const rows: number[][] = [];
+  for (let i = 0; i <= seg; i++) {
+    const t = i / seg;
+    const ang = -0.9 + t * 1.8;
+    const row: number[] = [];
+    for (let j = 0; j <= 4; j++) {
+      const v = j / 4;
+      const y = -v * H * 0.7 + H * 0.35;
+      const r = 0.09 * s + v * 0.02 * s;
+      const p = new Vector3(Math.sin(ang) * r, y + (1 - v) * 0.05 * s * (1 - Math.abs(ang)), Math.cos(ang) * r);
+      const n = new Vector3(Math.sin(ang), 0.3, Math.cos(ang)).normalize();
+      row.push(g.vertex(p, n, t, v));
+    }
+    rows.push(row);
+  }
+  for (let i = 0; i < seg; i++) for (let j = 0; j < 4; j++) g.quad(rows[i][j], rows[i + 1][j], rows[i + 1][j + 1], rows[i][j + 1]);
+  // hochstehender Rand
+  const fin = MeshBuilder.CreateBox('galerusFin', { width: W, height: 0.11 * s, depth: 0.012 * s }, scene);
+  fin.position.set(0, H * 0.45, 0.06 * s);
+  fin.material = m.bronze;
+  const plate = finalize(g.build('galerusPlate', scene), m.bronze);
+  plate.material!.backFaceCulling = false;
+  return merged('galerus', [plate, fin]);
+}
+
+/** Cardiophylax: kleiner Brustpanzer des Provocator (Z = vorn) */
+export function buildChestPlate(scene: Scene, m: GearMaterials, s: number): Mesh {
+  const g = new GeoBuilder();
+  const W = 0.3 * s;
+  const H = 0.22 * s;
+  const seg = 8;
+  const rows: number[][] = [];
+  for (let i = 0; i <= seg; i++) {
+    const x = -W / 2 + (W * i) / seg;
+    const z = -1.6 * x * x / s;
+    const row: number[] = [];
+    for (const [j, y] of [-H / 2, H / 2].entries()) {
+      const yy = y - (j === 1 ? Math.abs(x) * 0.6 : 0);
+      row.push(g.vertex(new Vector3(x, yy, z), new Vector3(3.2 * x / s, 0, 1).normalize(), i / seg, j));
+    }
+    rows.push(row);
+  }
+  for (let i = 0; i < seg; i++) g.quad(rows[i][0], rows[i + 1][0], rows[i + 1][1], rows[i][1]);
+  const plate = finalize(g.build('cardiophylax', scene), m.bronze);
+  plate.material!.backFaceCulling = false;
+  for (const x of [-W / 2 + 0.03 * s, W / 2 - 0.03 * s]) {
+    const strap = MeshBuilder.CreateBox('strap', { width: 0.025 * s, height: 0.18 * s, depth: 0.01 * s }, scene);
+    strap.position.set(x, H / 2 + 0.07 * s, -0.04 * s);
+    strap.material = m.leather;
+    plate.addChild(strap);
+  }
+  return plate;
+}
+
+/** Wickelbinden (Fasciae) am Bein */
+export function buildWraps(scene: Scene, m: GearMaterials, length: number, radius: number): Mesh {
+  const parts: Mesh[] = [];
+  const n = Math.max(4, Math.round(length / 0.045));
+  for (let i = 0; i < n; i++) {
+    const t = MeshBuilder.CreateTorus('wrap', { diameter: radius * 2 * (1.05 - (i / n) * 0.2), thickness: 0.018, tessellation: 14 }, scene);
+    t.position.y = -(i + 0.5) * (length / n);
+    t.rotation.x = (i % 2 ? 0.12 : -0.12);
+    parts.push(t);
+  }
+  const mesh = Mesh.MergeMeshes(parts, true, true) as Mesh;
+  mesh.name = 'wraps';
+  return finalize(mesh, m.cloth);
+}
+
+/** Wurfnetz (flach, für Flug und Fesselung) */
+export function buildNet(scene: Scene, m: GearMaterials): Mesh {
+  const d = MeshBuilder.CreateDisc('net', { radius: 0.9, tessellation: 18, sideOrientation: Mesh.DOUBLESIDE }, scene);
+  d.material = m.grille;
+  return d;
+}

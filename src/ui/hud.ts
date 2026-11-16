@@ -38,6 +38,7 @@ export class Hud {
     const battery = $<HTMLInputElement>('set-battery');
     const fps = $<HTMLInputElement>('set-fps');
     const assist = $<HTMLSelectElement>('set-assist');
+    if (settings.blockAssist === 'auto') settings.blockAssist = 'show';
     assist.value = settings.blockAssist;
     assist.addEventListener('change', () => {
       settings.blockAssist = assist.value as Settings['blockAssist'];
@@ -141,12 +142,13 @@ export class Hud {
 
   showControlsHint(): void {
     if (this.settings.scheme === 'gestures') {
-      this.hint('Rechts Daumen schieben: Deckung · tippen: Schlag · halten: schwer', 5);
-      window.setTimeout(() => this.hint('Schnell wischen: Parade · nach unten: Rolle · zwei Finger: Deckung brechen', 5), 5200);
-      window.setTimeout(() => this.hint('Roter Ring = Angriff kommt · grün = du blockst · JETZT = parieren', 5), 10400);
+      this.hint('Rechts tippen: Schlag (3er-Kombo) · halten: Wuchtschlag · wischen: Ausweichen', 5);
+      window.setTimeout(() => this.hint('Block halten · bei JETZT drücken = Parade · zwei Finger: Schildstoß', 5), 5200);
+      window.setTimeout(() => this.hint('Wuchtschläge brechen den Block – ausweichen oder parieren!', 5), 10400);
     } else {
-      this.hint('Pfeile: Deckung · Schlag tippen/halten · Parade im richtigen Moment', 5);
-      window.setTimeout(() => this.hint('Roter Ring = Angriff kommt · grün = du blockst · JETZT = parieren', 5), 5200);
+      this.hint('Schlag tippen: Kombo · halten: Wuchtschlag · Block halten', 5);
+      window.setTimeout(() => this.hint('Block bei JETZT drücken = Parade · Stoß bricht jeden Block', 5), 5200);
+      window.setTimeout(() => this.hint('Wuchtschläge brechen den Block – ausweichen oder parieren!', 5), 10400);
     }
   }
 
@@ -157,19 +159,11 @@ export class Hud {
   }
 
   private gw = $('guard-widget');
-  private gwParts = {
-    top: this.gw.querySelector<HTMLElement>('.gw-top')!,
-    left: this.gw.querySelector<HTMLElement>('.gw-left')!,
-    right: this.gw.querySelector<HTMLElement>('.gw-right')!,
-  };
   private ring = this.gw.querySelector<HTMLElement>('.gw-ring')!;
+  private ringLabel = this.ring.querySelector('span')!;
   private foeHp = $('foe-hp-fill');
   private foeSt = $('foe-st-fill');
-  private dirButtons = {
-    top: document.getElementById('btn-g-top'),
-    left: document.getElementById('btn-g-left'),
-    right: document.getElementById('btn-g-right'),
-  };
+  private blockBtn = $('btn-block');
 
   guard(info: GuardInfo | null): void {
     if (!info) {
@@ -183,29 +177,58 @@ export class Hud {
     }
     this.gw.hidden = false;
     this.gw.style.transform = `translate(${p.x}px, ${p.y}px)`;
-    for (const k of ['top', 'left', 'right'] as const) {
-      const el = this.gwParts[k];
-      el.classList.toggle('mine', info.mine === k);
-      el.classList.toggle('foe', info.foe === k);
-      el.classList.toggle('incoming', info.incoming === k);
-      el.classList.toggle('heavy', info.incoming === k && info.heavy);
-      this.dirButtons[k]?.classList.toggle('active', info.mine === k);
-    }
-    // Ring schrumpft bis zum Treffer: rot = falsche Deckung, grün = wird geblockt, gold = jetzt parieren
+    this.blockBtn.classList.toggle('active', info.blocking);
+    // Ring schrumpft bis zum Treffer. Gold mit JETZT = Block drücken für die Parade.
     if (info.incoming && info.impactIn !== null) {
-      const pos = { top: [62, 13], left: [13, 62], right: [111, 62] }[info.incoming];
       const k = Math.max(0, Math.min(1, info.impactIn / info.windup));
       this.ring.hidden = false;
-      this.ring.style.left = `${pos[0]}px`;
-      this.ring.style.top = `${pos[1]}px`;
+      this.ring.style.left = '62px';
+      this.ring.style.top = '62px';
       this.ring.style.transform = `scale(${0.8 + 1.8 * k})`;
-      this.ring.classList.toggle('covered', info.mine === info.incoming);
-      this.ring.classList.toggle('now', info.impactIn <= info.parryWindow);
+      const now = info.impactIn <= info.parryWindow;
+      this.ring.classList.toggle('now', now);
+      this.ring.classList.toggle('heavy', info.heavy && !now);
+      this.ring.classList.toggle('covered', info.blocking && !info.heavy && !now);
+      this.ringLabel.textContent = now ? 'JETZT' : info.heavy ? 'WUCHT' : '';
+      this.ring.classList.toggle('label', now || info.heavy);
     } else {
       this.ring.hidden = true;
     }
     this.foeHp.style.width = `${info.foeHp}%`;
     this.foeSt.style.width = `${info.foeSt}%`;
+    this.gw.classList.toggle('foe-blocking', info.foeBlocking);
+  }
+
+  private specialBtn = $('btn-special');
+  special(name: string | null, left: number, total: number): void {
+    const b = this.specialBtn;
+    if (!name) {
+      b.hidden = true;
+      return;
+    }
+    b.hidden = false;
+    const ready = left <= 0;
+    const label = ready ? name : `${Math.ceil(left)} s`;
+    if (b.textContent !== label) b.textContent = label;
+    b.classList.toggle('ready', ready);
+    b.classList.toggle('cooldown', !ready);
+    b.style.setProperty('--cd', `${Math.round((1 - left / total) * 100)}%`);
+  }
+
+  /** Bildschirm-Blitz und Vibration */
+  flash(kind: 'hurt' | 'parry' | 'strike'): void {
+    const el = $('hurt-flash');
+    el.className = '';
+    void el.offsetWidth;
+    el.className = kind;
+    const nav = navigator as Navigator & { vibrate?: (p: number | number[]) => boolean };
+    try {
+      if (kind === 'hurt') nav.vibrate?.(55);
+      else if (kind === 'parry') nav.vibrate?.([20, 30, 40]);
+      else nav.vibrate?.(25);
+    } catch {
+      /* nicht unterstützt */
+    }
   }
 
   floatText(world: Vector3, text: string, kind: 'good' | 'bad' | 'big' | '' = ''): void {
