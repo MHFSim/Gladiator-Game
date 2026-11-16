@@ -20,7 +20,10 @@ try {
   logs.push('[timeout] Spiel wurde nicht fertig geladen');
 }
 await new Promise((r) => setTimeout(r, Number(waitMs)));
-if (process.env.EVAL) console.log('EVAL', JSON.stringify(await page.evaluate(process.env.EVAL)));
+if (process.env.EVAL) {
+  console.log('EVAL', JSON.stringify(await page.evaluate(process.env.EVAL)));
+  await new Promise((r) => setTimeout(r, 1200));
+}
 await page.screenshot({ path: out });
 console.log(logs.slice(-25).join('\n'));
 await browser.close();

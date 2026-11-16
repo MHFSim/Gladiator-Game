@@ -5,7 +5,7 @@ Gebaut mit [Babylon.js 9](https://www.babylonjs.com), läuft komplett über GitH
 
 **Spielen:** https://mhfsim.github.io/Gladiator-Game/
 
-## Stand: Phase 3 – Publikum, Wetter, Kolosseum (in Arbeit)
+## Stand: Phase 3 – Publikum, Wetter, Kolosseum
 
 **Arena und Grafik (Phase 0)**
 - Ludus von Capua, komplett im Code erzeugt: bemalte Podiumsmauer, zwei Tore mit Fallgitter, Sitzstufen,
@@ -46,6 +46,7 @@ Gebaut mit [Babylon.js 9](https://www.babylonjs.com), läuft komplett über GitH
 - Gunst des Publikums: Paraden, Treffer, Finten und Ausweichen bringen Gunst, lange Pausen kosten sie. Die ✊-Taste heizt an – im richtigen Moment tobt die Menge, wer verliert, wird ausgebuht.
 - Sehr hohe Gunst: Wein und Brot fliegen in die Arena (Leben und Ausdauer). Sehr niedrige Gunst: faules Obst.
 - Kampfende: Zeitlupe, der Verlierer sinkt auf die Knie, das Volk stimmt ab, der Kaiser zeigt den Daumen. Missio = Gnade, Iugula = Todesstoß.
+- Blut bleibt im Sand: unregelmäßige, nass glänzende Spritzer, unter Gefallenen wächst eine Lache. Beim Todesstoß geht die Kamera tief und nah heran.
 - Ton ohne Audiodateien (Web Audio): Menge, Jubel, Buhrufe, Metall, Schild, Treffer, Fanfare. Abschaltbar in den Einstellungen.
 
 **Wetter (Phase 3)**

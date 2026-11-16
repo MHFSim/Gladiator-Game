@@ -1,4 +1,4 @@
-import { Color4, Mesh, MeshBuilder, ParticleSystem, Scene, StandardMaterial, Vector3, Color3 } from '@babylonjs/core';
+import { Color4, DynamicTexture, Mesh, MeshBuilder, ParticleSystem, PBRMaterial, Scene, Vector3, Color3 } from '@babylonjs/core';
 import { flareTexture } from '../render/textures';
 
 /** Treffer-Effekte: Blut, Funken, Blutflecken im Sand */
@@ -6,7 +6,8 @@ export class Fx {
   private blood: ParticleSystem;
   private sparks: ParticleSystem;
   private decals: Mesh[] = [];
-  private decalMat: StandardMaterial;
+  private decalMats: PBRMaterial[] = [];
+  private pools: { m: Mesh; t: number; max: number }[] = [];
   private next = 0;
 
   constructor(private readonly scene: Scene) {
@@ -46,12 +47,47 @@ export class Fx {
     this.sparks.blendMode = ParticleSystem.BLENDMODE_ADD;
     this.sparks.start();
 
-    this.decalMat = new StandardMaterial('bloodDecal', scene);
-    this.decalMat.diffuseTexture = flareTexture(scene, 'bloodD', 'rgba(70,4,4,0.95)', 'rgba(60,2,2,0.7)');
-    this.decalMat.diffuseTexture.hasAlpha = true;
-    this.decalMat.useAlphaFromDiffuseTexture = true;
-    this.decalMat.specularColor = new Color3(0.2, 0.05, 0.05);
-    this.decalMat.zOffset = -2;
+    // Mehrere Spritzer-Formen, nass glänzend
+    for (let i = 0; i < 4; i++) {
+      const m = new PBRMaterial('bloodDecal' + i, scene);
+      m.albedoTexture = splatTexture(scene, i);
+      m.useAlphaFromAlbedoTexture = true;
+      m.albedoColor = new Color3(0.15, 0.008, 0.008);
+      m.metallic = 0;
+      m.roughness = 0.28;
+      m.environmentIntensity = 0;
+      m.zOffset = -2;
+      m.maxSimultaneousLights = 2;
+      this.decalMats.push(m);
+    }
+  }
+
+  /** Blutlache, die langsam unter einem Körper wächst */
+  pool(at: Vector3): void {
+    const d = MeshBuilder.CreateGround('bloodPool', { width: 1, height: 1 }, this.scene);
+    d.material = this.decalMats[3];
+    d.isPickable = false;
+    d.receiveShadows = true;
+    d.position.set(at.x, 0.014, at.z);
+    d.rotation.y = Math.random() * Math.PI * 2;
+    d.scaling.set(0.05, 1, 0.05);
+    this.pools.push({ m: d, t: 0, max: 1.3 + Math.random() * 0.5 });
+    if (this.pools.length > 6) this.pools.shift()!.m.dispose();
+  }
+
+  update(dt: number): void {
+    for (const p of this.pools) {
+      if (p.t >= 1) continue;
+      p.t = Math.min(1, p.t + dt / 5);
+      const s = 0.05 + (p.max - 0.05) * (1 - (1 - p.t) * (1 - p.t));
+      p.m.scaling.set(s * 1.25, 1, s);
+    }
+  }
+
+  /** Neuer Kampf: Lachen weg, Spritzer bleiben als Geschichte im Sand */
+  clearPools(): void {
+    for (const p of this.pools) p.m.dispose();
+    this.pools = [];
   }
 
   bloodAt(p: Vector3, dir: Vector3): void {
@@ -79,7 +115,7 @@ export class Fx {
     let d: Mesh;
     if (this.decals.length < 70) {
       d = MeshBuilder.CreateGround('bloodDecal', { width: 1, height: 1 }, this.scene);
-      d.material = this.decalMat;
+      d.material = this.decalMats[this.decals.length % 3];
       d.isPickable = false;
       d.receiveShadows = true;
       this.decals.push(d);
@@ -91,4 +127,49 @@ export class Fx {
     d.rotation.y = Math.random() * Math.PI * 2;
     d.scaling.set(size * (0.8 + Math.random() * 0.6), 1, size);
   }
+}
+
+/** Blutspritzer: Fleck mit unregelmäßigem Rand und Tropfen ringsum */
+function splatTexture(scene: Scene, seed: number): DynamicTexture {
+  const S = 128;
+  const tex = new DynamicTexture('splat' + seed, { width: S, height: S }, scene, true);
+  const ctx = tex.getContext() as unknown as CanvasRenderingContext2D;
+  ctx.clearRect(0, 0, S, S);
+  let r = seed * 9301 + 49297;
+  const rnd = () => ((r = (r * 9301 + 49297) % 233280) / 233280);
+  const blob = (cx: number, cy: number, rad: number, a: number) => {
+    ctx.beginPath();
+    const n = 40;
+    const ph = rnd() * 6;
+    for (let i = 0; i <= n; i++) {
+      const ang = (i / n) * Math.PI * 2;
+      const rr = rad * (0.82 + 0.12 * Math.sin(ang * 3 + ph) + 0.08 * Math.sin(ang * 7 + ph * 2) + rnd() * 0.06);
+      const x = cx + Math.cos(ang) * rr;
+      const y = cy + Math.sin(ang) * rr;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.fillStyle = `rgba(255,255,255,${a})`;
+    ctx.shadowColor = `rgba(255,255,255,${a * 0.8})`;
+    ctx.shadowBlur = 3;
+    ctx.fill();
+  };
+  const big = seed === 3;
+  blob(S / 2, S / 2, big ? S * 0.4 : S * 0.2, 0.92);
+  if (!big) {
+    for (let i = 0; i < 4; i++) blob(S / 2 + (rnd() - 0.5) * S * 0.3, S / 2 + (rnd() - 0.5) * S * 0.3, S * (0.07 + rnd() * 0.08), 0.85);
+    // Tropfen in eine Richtung
+    const dir = rnd() * Math.PI * 2;
+    for (let i = 0; i < 14; i++) {
+      const d = S * (0.22 + rnd() * 0.25);
+      const ang = dir + (rnd() - 0.5) * 1.4;
+      blob(S / 2 + Math.cos(ang) * d, S / 2 + Math.sin(ang) * d, S * (0.01 + rnd() * 0.025), 0.9);
+    }
+  } else {
+    for (let i = 0; i < 6; i++) blob(S / 2 + (rnd() - 0.5) * S * 0.4, S / 2 + (rnd() - 0.5) * S * 0.4, S * (0.12 + rnd() * 0.1), 0.9);
+  }
+  tex.hasAlpha = true;
+  tex.update(false);
+  return tex;
 }

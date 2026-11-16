@@ -311,6 +311,7 @@ export class Game implements FighterEvents {
     this.slowmo = 0;
     this.scene.animationTimeScale = 1;
     this.spec.resetMatch();
+    this.fx.clearPools();
     this.hud.score(0, 0);
     this.hud.foeName(`${this.foe.info.name} · Stufe ${this.foe.info.level}`);
     for (const f of [this.player, this.foe]) {
@@ -455,6 +456,11 @@ export class Game implements FighterEvents {
         this.resetMatch();
         this.onRematch?.();
         break;
+      case 'pool': {
+        const pp = e.p as number[];
+        this.fx.pool(new Vector3(pp[0], 0, pp[1]));
+        break;
+      }
       case 'sfx':
         (this.sound[e.n as 'clash'] as (h: boolean) => void).call(this.sound, !!e.h);
         break;
@@ -603,6 +609,7 @@ export class Game implements FighterEvents {
       const p = this.player;
       this.net.send('in', { p: [p.pos.x, p.pos.z], h: p.g.heading, ly: p.g.legYaw, v: [p.vel.x, p.vel.z], bw: p.backwards, g: p.guard });
     }
+    this.fx.update(dt);
     this.updateCamera(dt);
     this.hud.favor(this.player.favor, this.foe.favor);
     // HUD: Angriff des Gegners aus dem Schnappschuss
@@ -830,6 +837,7 @@ export class Game implements FighterEvents {
     this.impulse(D, push.scale(1.5));
     this.setHitStop(0.25);
     window.setTimeout(() => this.sfx('fall'), 450);
+    window.setTimeout(() => this.bloodPool(D), 1200);
     if (this.roundOver) return;
     this.roundOver = true;
     this.deed('kill', D === this.player ? this.foe : this.player);
@@ -873,10 +881,18 @@ export class Game implements FighterEvents {
             l.g.animator.play('death', { fadeIn: 0.05, loop: true });
             window.setTimeout(() => l.g.animator.pause('death'), l.g.animator.durationOf('death') * 900);
             window.setTimeout(() => this.sfx('fall'), 500);
+            window.setTimeout(() => this.bloodPool(l), 900);
           },
         },
       ],
     });
+  }
+
+  /** Blutlache unter einem Körper (auch beim Gast) */
+  private bloodPool(f: Fighter): void {
+    const p = f.pos.add(new Vector3(Math.sin(f.g.heading) * -0.6, 0, Math.cos(f.g.heading) * -0.6));
+    this.fx.pool(p);
+    this.send('ev', { k: 'pool', p: [p.x, p.z] });
   }
 
   private ceremonyDone(v: Verdict): void {
@@ -1016,6 +1032,7 @@ export class Game implements FighterEvents {
       f.g.animator.update(dt);
     }
     this.arena.update(dt, daylight);
+    this.fx.update(dt);
     if (!freeze) this.updateCamera(dt);
     this.updateHud();
   }
@@ -1177,7 +1194,19 @@ export class Game implements FighterEvents {
     const target = p.pos.add(new Vector3(0, 1.5, 0));
     let camPos: Vector3;
     let look: Vector3;
-    if (this.spec.inCeremony) {
+    const cer = this.spec.cer;
+    if (cer && (cer.phase === 'strike' || (cer.phase === 'end' && cer.verdict === 'iugula'))) {
+      // Todesstoß: tief und nah von der Seite
+      this.cerCam += dt;
+      const w = cer.winner.pos;
+      const l = cer.loser.pos;
+      const mid = Vector3.Lerp(w, l, 0.5);
+      const d = l.subtract(w);
+      d.y = 0;
+      const side = new Vector3(d.z, 0, -d.x).normalize();
+      camPos = mid.add(side.scale(3.1)).add(d.normalize().scale(-0.6)).add(new Vector3(0, 0.95, 0));
+      look = mid.add(new Vector3(0, 0.75, 0));
+    } else if (this.spec.inCeremony) {
       // Kinoperspektive: Kaiserloge im Hintergrund, langsame Fahrt
       this.cerCam += dt;
       const mid = Vector3.Lerp(p.pos, this.foe.pos, 0.5);
