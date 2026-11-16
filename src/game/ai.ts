@@ -34,7 +34,7 @@ export class AiController {
 
   constructor(
     private readonly self: Fighter,
-    private readonly foe: Fighter,
+    private readonly foeOf: () => Fighter | null,
     levelIndex: number,
   ) {
     this.level = COMBAT.ai[Math.max(0, Math.min(COMBAT.ai.length - 1, levelIndex))];
@@ -55,9 +55,10 @@ export class AiController {
     this.nextAttack = now + 1.5 + Math.random();
   }
 
-  /** Der Spieler beginnt einen Angriff: reagieren wie ein Mensch, also mit Verzögerung */
-  onFoeAttack(a: ActiveAttack, now: number): void {
+  /** Ein Gegner beginnt einen Angriff auf diese KI: reagieren wie ein Mensch, also mit Verzögerung */
+  onFoeAttack(a: ActiveAttack, now: number, attacker: Fighter): void {
     const L = this.level;
+    const foe = attacker;
     const react = L.react * (0.8 + Math.random() * 0.45);
     const timeLeft = a.impactAt - now;
     const r = Math.random();
@@ -73,8 +74,8 @@ export class AiController {
       });
     } else if (r < L.parry + L.dodge * vsHeavy && timeLeft > react + 0.05) {
       this.schedule(now + react, () => {
-        if (this.foe.attack !== a) return;
-        const away = this.self.pos.subtract(this.foe.pos).normalize();
+        if (foe.attack !== a) return;
+        const away = this.self.pos.subtract(foe.pos).normalize();
         const side = new Vector3(away.z, 0, -away.x).scale(Math.random() < 0.5 ? 1 : -1);
         this.self.setBlock(false);
         this.self.roll(side.add(away.scale(0.5)));
@@ -94,17 +95,17 @@ export class AiController {
   /** Liefert die gewünschte Bewegung (Richtung, Geschwindigkeit) */
   update(now: number): { dir: Vector3; speed: number } {
     const self = this.self;
-    const foe = this.foe;
+    const foe = this.foeOf();
     const L = this.level;
     const due = this.pending.filter((p) => p.at <= now);
     this.pending = this.pending.filter((p) => p.at > now);
     for (const p of due) p.fn();
 
-    if (self.mode === 'dead' || foe.mode === 'dead') {
+    if (self.mode === 'dead' || !foe || foe.mode === 'dead') {
       self.setBlock(false);
       return { dir: Vector3.Zero(), speed: 0 };
     }
-    if (self.blockWanted && now >= this.releaseBlockAt && !foe.attack) self.setBlock(false);
+    if (self.blockWanted && now >= this.releaseBlockAt) self.setBlock(false);
 
     const toFoe = foe.pos.subtract(self.pos);
     toFoe.y = 0;

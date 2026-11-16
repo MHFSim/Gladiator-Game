@@ -3,6 +3,7 @@ import {
   AnimationGroup,
   AnimationGroupMask,
   AnimationGroupMaskMode,
+  type BaseTexture,
   AssetContainer,
   LoadAssetContainerAsync,
   Color3,
@@ -42,6 +43,7 @@ import {
   type Team,
 } from './gear';
 import { CLASSES, type ClassId } from '../data/classes';
+import { clothMaps, shieldTexture } from '../render/textures';
 
 export type SeverPart = 'head' | 'armR' | 'armL' | 'legL' | 'legR';
 
@@ -50,6 +52,9 @@ export interface Look {
   cls: ClassId;
   tiers: [number, number, number, number, number];
 }
+
+const SHIELD_TEX = new Map<string, BaseTexture>();
+const PLUME_TEX = new Map<string, BaseTexture>();
 
 /** Metallfarben je Seltenheit: gewöhnlich, gut, selten, episch, legendär */
 const TIER_COLORS = {
@@ -596,6 +601,35 @@ export class Gladiator {
       return { toe: toe.toString(), helmFwd: hf.toString(), bodyWorldDet: body.getWorldMatrix().determinant(), bodyParent: body.parent?.name, alignRot: align.rotation.y, handR: w('hand_r').toString(), headPos: w('Head').toString() };
     };
     return g;
+  }
+
+  /* ---------- Teamfarbe ---------- */
+
+  private teamKey = '';
+
+  /** Schildbemalung und Federbusch in Teamfarbe */
+  setTeam(team: Team): void {
+    const key = team.field + team.emblem + team.plume.join(',');
+    if (key === this.teamKey) return;
+    this.teamKey = key;
+    let st = SHIELD_TEX.get(team.field + team.emblem);
+    if (!st) {
+      st = shieldTexture(this.scene, team.field, team.emblem);
+      SHIELD_TEX.set(team.field + team.emblem, st);
+    }
+    this.mat.shieldFront.albedoTexture = st;
+    const pk = team.plume.join(',');
+    let pt = PLUME_TEX.get(pk);
+    if (!pt) {
+      pt = clothMaps(this.scene, team.plume).albedo;
+      PLUME_TEX.set(pk, pt);
+    }
+    this.mat.plume.albedoTexture = pt;
+  }
+
+  /** Sichtbar oder ausgeblendet (Figuren im Vorrat) */
+  setActive(on: boolean): void {
+    this.root.setEnabled(on);
   }
 
   /* ---------- Zerstückelung ---------- */

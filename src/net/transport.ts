@@ -1,24 +1,25 @@
 import { joinRoom } from 'trystero';
 
-/** Gemeinsame Schnittstelle für die Verbindung zwischen zwei Spielern */
+/** Gemeinsame Schnittstelle für die Verbindung zwischen mehreren Spielern (Gastgeber + bis zu 7 Gäste) */
 export interface Transport {
   send(ch: string, data: unknown): void;
-  on(ch: string, fn: (data: unknown) => void): void;
-  onPeerJoin(fn: () => void): void;
-  onPeerLeave(fn: () => void): void;
+  on(ch: string, fn: (data: unknown, peer: string) => void): void;
+  onPeerJoin(fn: (peer: string) => void): void;
+  onPeerLeave(fn: (peer: string) => void): void;
   leave(): void;
   readonly kind: string;
 }
 
-export const CHANNELS = ['hello', 'prep', 'ready', 'start', 'in', 'act', 'snap', 'anim', 'ev'] as const;
+export const CHANNELS = ['hello', 'lobby', 'prep', 'ready', 'start', 'in', 'act', 'snap', 'anim', 'ev'] as const;
 const APP_ID = 'mhfsim.github.io/Gladiator-Game/v1';
 
 /** Echte Verbindung übers Internet: WebRTC direkt zwischen den Handys, Vermittlung über öffentliche Nostr-Relays */
 export function trysteroTransport(code: string): Transport {
-  const room = joinRoom({ appId: APP_ID, maxUsers: 2, identity: 'none' } as Parameters<typeof joinRoom>[0], 'arena-' + code);
-  const actions = new Map<string, { send: (d: unknown) => Promise<void>; onMessage: (h: (d: unknown) => void) => unknown }>();
+  const room = joinRoom({ appId: APP_ID, maxUsers: 8, identity: 'none' } as Parameters<typeof joinRoom>[0], 'arena-' + code);
+  type Act = { send: (d: unknown) => Promise<void>; onMessage: (h: (d: unknown, ctx: { peerId: string }) => void) => unknown };
+  const actions = new Map<string, Act>();
   for (const ch of CHANNELS) {
-    actions.set(ch, room.makeAction(ch) as unknown as { send: (d: unknown) => Promise<void>; onMessage: (h: (d: unknown) => void) => unknown });
+    actions.set(ch, room.makeAction(ch) as unknown as Act);
   }
   return {
     kind: 'webrtc',
@@ -26,13 +27,13 @@ export function trysteroTransport(code: string): Transport {
       actions.get(ch)?.send(data).catch(() => undefined);
     },
     on(ch, fn) {
-      actions.get(ch)?.onMessage((d) => fn(d));
+      actions.get(ch)?.onMessage((d, ctx) => fn(d, ctx?.peerId ?? '?'));
     },
     onPeerJoin(fn) {
-      room.onPeerJoin(() => fn());
+      room.onPeerJoin((ctx: { peerId: string }) => fn(ctx?.peerId ?? '?'));
     },
     onPeerLeave(fn) {
-      room.onPeerLeave(() => fn());
+      room.onPeerLeave((ctx: { peerId: string }) => fn(ctx?.peerId ?? '?'));
     },
     leave() {
       room.leave().catch(() => undefined);
@@ -40,40 +41,42 @@ export function trysteroTransport(code: string): Transport {
   };
 }
 
-/** Lokale Verbindung zwischen zwei Tabs desselben Browsers (nur zum Testen, ?net=local) */
+/** Lokale Verbindung zwischen Tabs desselben Browsers (nur zum Testen, ?net=local) */
 export function localTransport(code: string): Transport {
   const bc = new BroadcastChannel('seg-' + code);
   const me = Math.random().toString(36).slice(2);
-  const handlers = new Map<string, ((d: unknown) => void)[]>();
-  const joins: (() => void)[] = [];
-  const leaves: (() => void)[] = [];
-  let peer: string | null = null;
-  let lastSeen = 0;
+  const handlers = new Map<string, ((d: unknown, peer: string) => void)[]>();
+  const joins: ((p: string) => void)[] = [];
+  const leaves: ((p: string) => void)[] = [];
+  const peers = new Map<string, number>();
   const post = (ch: string, data: unknown) => bc.postMessage({ from: me, ch, data });
   bc.onmessage = (e) => {
     const { from, ch, data } = e.data as { from: string; ch: string; data: unknown };
     if (from === me) return;
-    lastSeen = performance.now();
+    const known = peers.has(from);
+    peers.set(from, performance.now());
     if (ch === '_presence') {
-      if (peer !== from) {
-        peer = from;
+      if (!known) {
         post('_presence', null);
-        joins.forEach((f) => f());
+        joins.forEach((f) => f(from));
       }
       return;
     }
     if (ch === '_bye') {
-      peer = null;
-      leaves.forEach((f) => f());
+      peers.delete(from);
+      leaves.forEach((f) => f(from));
       return;
     }
-    for (const h of handlers.get(ch) ?? []) h(data);
+    if (!known) joins.forEach((f) => f(from));
+    for (const h of handlers.get(ch) ?? []) h(data, from);
   };
   const beat = window.setInterval(() => {
     post('_presence', null);
-    if (peer && performance.now() - lastSeen > 4000) {
-      peer = null;
-      leaves.forEach((f) => f());
+    for (const [p, seen] of peers) {
+      if (performance.now() - seen > 4000) {
+        peers.delete(p);
+        leaves.forEach((f) => f(p));
+      }
     }
   }, 1000);
   post('_presence', null);

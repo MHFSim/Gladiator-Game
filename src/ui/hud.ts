@@ -225,6 +225,36 @@ export class Hud {
 
   private splats: string[] = [];
 
+  /** Bildschirmposition eines Weltpunkts */
+  project(world: Vector3): { x: number; y: number } | null {
+    return this.hooks.project(world);
+  }
+
+  private markEls: HTMLElement[] = [];
+
+  /** Namen und Leben über den anderen Kämpfern (ab 3 Kämpfern) */
+  marks(list: { x: number; y: number; hp: number; ally: boolean; name: string }[]): void {
+    const box = $('marks');
+    while (this.markEls.length < list.length) {
+      const el = document.createElement('div');
+      el.className = 'mark';
+      el.innerHTML = '<span></span><b><i></i></b>';
+      box.appendChild(el);
+      this.markEls.push(el);
+    }
+    this.markEls.forEach((el, i) => {
+      const m = list[i];
+      el.hidden = !m;
+      if (!m) return;
+      el.style.left = `${m.x}px`;
+      el.style.top = `${m.y}px`;
+      el.classList.toggle('ally', m.ally);
+      const span = el.firstElementChild as HTMLElement;
+      if (span.textContent !== m.name) span.textContent = m.name;
+      (el.querySelector('i') as HTMLElement).style.width = `${Math.max(0, Math.min(100, m.hp))}%`;
+    });
+  }
+
   /** Blutspritzer auf der Kamera (laufen langsam herunter) */
   screenBlood(amount: number): void {
     if (amount <= 0.05) return;
@@ -277,8 +307,9 @@ export class Hud {
     window.setTimeout(() => el.remove(), 1000);
   }
 
-  score(player: number, foe: number): void {
-    $('score').textContent = player + foe > 0 ? `${player} : ${foe}` : '';
+  score(text: string): void {
+    const el = $('score');
+    if (el.textContent !== text) el.textContent = text;
   }
 
   private favFill = $('fav-fill');

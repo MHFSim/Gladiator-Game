@@ -106,6 +106,12 @@ export class Fighter {
   info: FighterInfo = { name: 'Gladiator', level: 1 };
   kit: Kit = DEFAULT_KIT;
   parries = 0;
+  /** Tötungen in diesem Kampf */
+  kills = 0;
+  /** Team (0, 1, … ; jeder gegen jeden: eigenes Team) */
+  team = 0;
+  /** local = dieses Handy, ai = KI, sonst Kennung eines Gasts */
+  owner = 'local';
   favor = 50;
   damageTaken = 0;
   /** Wetter: Erholung und Kosten fürs Ausweichen */

@@ -34,6 +34,9 @@ const guest = await mk('guest');
 await guest.goto(`${base}?net=local&quality=low&arena=capua&room=${code}`, { waitUntil: 'load' });
 await guest.waitForFunction('window.__ready === true', { timeout: 180000 });
 await host.bringToFront();
+await host.waitForFunction("!document.getElementById('m-host-start').disabled", { timeout: 60000 });
+console.log('Lobby:', await host.$eval('#host-lobby', (e) => e.textContent));
+await host.click('#m-host-start');
 try {
   await host.waitForFunction("document.getElementById('menu').hidden === true", { timeout: 60000 });
 } catch (e) {

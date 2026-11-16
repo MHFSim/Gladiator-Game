@@ -6,6 +6,7 @@ import { createEngine } from './core/engine';
 import { DynamicResolution, guessTier, PROFILES, TIER_ORDER } from './core/quality';
 import { loadSettings, saveSettings } from './core/settings';
 import { Game } from './game/game';
+import { TEAM_COLORS } from './game/match';
 import { Gladiator, GladiatorAssets } from './gladiators/gladiator';
 import { bindButtons, TouchInput } from './input/touch';
 import { createEnvironment } from './render/environment';
@@ -181,7 +182,7 @@ async function boot(): Promise<void> {
     tierLabel: tier,
   });
   hud.onCheer(() => input.push({ type: 'cheer' }));
-  game = new Game(scene, camera, built.arena, player, dummy, input, hud, settings.difficulty, sound);
+  game = new Game(scene, camera, built.arena, [player, dummy], () => Gladiator.create(scene, env, assets, TEAM_COLORS[0]), input, hud, settings.difficulty, sound);
   const g = game;
   g.blockAssist = settings.blockAssist;
   g.setGore(settings.gore);

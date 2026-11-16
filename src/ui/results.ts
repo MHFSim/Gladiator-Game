@@ -1,4 +1,5 @@
 import type { MatchResult } from '../game/game';
+import { MODE_NAMES } from '../game/match';
 import { addXp, saveHero, winReward, xpForNext, MAX_ITEMS, POINTS_PER_LEVEL, type Hero } from '../game/hero';
 import { dismantleValue, mainText, RARITY, rollLoot, winDenare } from '../game/items';
 
@@ -26,14 +27,21 @@ export class Results {
       : r.verdict === 'missio'
         ? 'Der Kaiser schenkte dir das Leben.'
         : 'Der Kaiser verlangte deinen Tod – im Ludus flickt man dich wieder zusammen.';
-    $('r-sub').textContent = `${r.wins} : ${r.losses} gegen ${r.foe.name} (Stufe ${r.foe.level}) · ${fate}`;
+    const group = r.mode !== 'duel';
+    const killText = r.kills === 1 ? '1 Gegner getötet' : `${r.kills} Gegner getötet`;
+    $('r-sub').textContent = group
+      ? `${MODE_NAMES[r.mode]} · ${r.enemies} Gegner (Ø Stufe ${r.foe.level}) · ${killText}`
+      : `${r.wins} : ${r.losses} gegen ${r.foe.name} (Stufe ${r.foe.level}) · ${fate}`;
     const lines = $('r-lines');
     let gained = 0;
     let levels = 0;
     if (r.won) {
-      const rw = winReward(h.level, r.foe.level, r.parries, r.losses === 0, r.pvp);
-      gained = rw.total;
+      const rw = winReward(h.level, r.foe.level, r.parries, !group && r.losses === 0, r.pvp);
+      // Gruppenkampf: jede Tötung bringt zusätzlich Ruhm
+      const killXp = group ? Math.round(r.kills * rw.base * 0.25) : 0;
+      gained = rw.total + killXp;
       const parts = [`Sieg +${rw.base}`];
+      if (killXp) parts.push(`Tötungen ×${r.kills} +${killXp}`);
       if (rw.parries) parts.push(`Paraden ×${Math.min(10, r.parries)} +${rw.parries}`);
       if (rw.flawless) parts.push(`Makellos ${r.wins}:0 +${rw.flawless}`);
       levels = addXp(h, gained).levelsGained;
@@ -53,7 +61,7 @@ export class Results {
       }
       lines.innerHTML = `${parts.join(' · ')}<br><b>+${gained} Erfahrung</b> · <b>+${den} Denare</b><br><span class="loot">Beute: <span style="color:${RARITY[loot.rarity].color}">${loot.name}</span> (${RARITY[loot.rarity].name}, ${mainText(loot)})</span>`;
     } else {
-      lines.innerHTML = 'Keine Erfahrung – nur Siege bringen Ruhm.';
+      lines.innerHTML = group && r.kills > 0 ? `${killText}, doch der Sieg ging an andere. Keine Erfahrung – nur Siege bringen Ruhm.` : 'Keine Erfahrung – nur Siege bringen Ruhm.';
       h.losses++;
     }
     saveHero(h);

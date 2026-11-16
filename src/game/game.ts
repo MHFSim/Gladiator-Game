@@ -1,20 +1,18 @@
-import { Color3, FreeCamera, Scene, StandardMaterial, TrailMesh, Vector3 } from '@babylonjs/core';
+import { Color3, FreeCamera, MeshBuilder, Scene, StandardMaterial, TrailMesh, Vector3, type Mesh } from '@babylonjs/core';
 import type { Arena } from '../arena/capua';
-import type { Gladiator } from '../gladiators/gladiator';
+import type { AnimCmd, Gladiator, SeverPart } from '../gladiators/gladiator';
 import type { Action, TouchInput } from '../input/touch';
-import type { AnimCmd } from '../gladiators/gladiator';
 import type { Transport } from '../net/transport';
-import { AiController } from './ai';
-import { COMBAT, Fighter, type Kit, type ActiveAttack, type Dir, type FighterEvents } from './fighter';
-import { Fx } from './fx';
-import type { FighterInfo, Stats } from './hero';
 import type { Sound } from '../audio/sound';
 import { CLASSES, type ClassId } from '../data/classes';
 import { buildNet } from '../gladiators/gear';
-import { MeshBuilder, type Mesh } from '@babylonjs/core';
-import { Spectacle, type Deed, type Verdict } from './spectacle';
+import { AiController } from './ai';
+import { COMBAT, Fighter, type ActiveAttack, type Dir, type FighterEvents, type Kit } from './fighter';
+import { Fx } from './fx';
 import { Gore, type GoreLevel } from './gore';
-import type { SeverPart } from '../gladiators/gladiator';
+import type { FighterInfo } from './hero';
+import { isTeamMode, spawnPoints, TEAM_COLORS, type FighterSetup, type MatchMode, type MatchSetup } from './match';
+import { Spectacle, type Deed, type Verdict } from './spectacle';
 
 const TAU = Math.PI * 2;
 
@@ -25,12 +23,21 @@ export function angleDiff(a: number, b: number): number {
   return d;
 }
 
+/** Kleine Anzeige über einem Kämpfer (Name, Leben) */
+export interface Mark {
+  x: number;
+  y: number;
+  hp: number;
+  ally: boolean;
+  name: string;
+}
+
 export interface HudHooks {
   setBars(hp: number, st: number, exhausted: boolean): void;
   hint(text: string, seconds?: number): void;
   floatText(world: Vector3, text: string, kind?: 'good' | 'bad' | 'big' | ''): void;
   guard(info: GuardInfo | null): void;
-  score(player: number, foe: number): void;
+  score(text: string): void;
   setLocked(on: boolean): void;
   foeName(text: string): void;
   favor(mine: number, foe: number): void;
@@ -40,30 +47,24 @@ export interface HudHooks {
   flash?(kind: 'hurt' | 'parry' | 'strike'): void;
   screenBlood?(amount: number): void;
   special?(name: string | null, left: number, total: number): void;
+  marks?(list: Mark[]): void;
+  project(world: Vector3): { x: number; y: number } | null;
 }
 
 export const WINS_NEEDED = 2;
 
 export interface MatchResult {
   won: boolean;
+  mode: MatchMode;
   wins: number;
   losses: number;
+  /** Gegner (bei mehreren: Durchschnitt der Stufen) */
   foe: FighterInfo;
+  enemies: number;
+  kills: number;
   parries: number;
   pvp: boolean;
   verdict: Verdict;
-}
-
-export interface NetSetup {
-  /** 0 = Gastgeber, 1 = Gast */
-  stats: [Stats, Stats];
-  info: [FighterInfo, FighterInfo];
-  weather?: string;
-  time?: number;
-  arena?: 'capua' | 'colosseum';
-  cls?: [ClassId, ClassId];
-  kits?: [Kit, Kit];
-  tiers?: [[number, number, number, number, number], [number, number, number, number, number]];
 }
 
 export type Role = 'solo' | 'host' | 'guest';
@@ -82,15 +83,24 @@ interface NetFighter {
   ex: boolean;
   fv: number;
   sc: number;
+  t: number;
   at: { d: Dir; hv: boolean; ii: number; wu: number } | null;
 }
 
 interface Snap {
-  f: [NetFighter, NetFighter]; // 0 = Gastgeber, 1 = Gast
+  f: NetFighter[];
   recv: number;
 }
 
-type NetAction = Exclude<Action, { type: 'roll' } | { type: 'lock' }> | { type: 'roll'; v: [number, number] };
+interface InMsg {
+  p: [number, number];
+  h: number;
+  ly: number;
+  v: [number, number];
+  bw: boolean;
+}
+
+type NetAction = Exclude<Action, { type: 'roll' }> | { type: 'roll'; v: [number, number] } | { type: 'target' };
 
 export interface GuardInfo {
   anchor: Vector3; // Weltposition über dem Gegner
@@ -105,14 +115,23 @@ export interface GuardInfo {
   foeSt: number;
 }
 
+type FloatKind = 'good' | 'bad' | 'big' | '';
+type HitFx = 'parry' | 'hit' | 'big';
+
 /**
- * Phase 1: Richtungskampf gegen einen KI-Gegner im Ludus von Capua.
+ * Das Spiel: beliebig viele Kämpfer in Teams (Duell, 2 gegen 2, 3 gegen 3, jeder gegen jeden).
+ * Training: alles auf diesem Handy. Gastgeber: rechnet alles und schickt Schnappschüsse. Gast: zeigt an und schickt Eingaben.
  */
 export class Game implements FighterEvents {
-  readonly player: Fighter;
-  readonly foe: Fighter;
-  readonly ai: AiController;
+  fighters: Fighter[] = [];
+  private setups: FighterSetup[] = [];
+  private meIdx = 0;
+  mode: MatchMode = 'duel';
+  private ais = new Map<Fighter, AiController>();
+  private aiMoves = new Map<Fighter, { dir: Vector3; speed: number }>();
   private fx: Fx;
+  readonly spec: Spectacle;
+  readonly gore: Gore;
   private yaw = 0;
   private pitch = 0.32;
   private lastDrag = 0;
@@ -122,138 +141,226 @@ export class Game implements FighterEvents {
   private locked = false;
   private manualUnlock = false;
   private roundOver = false;
-  private wins = 0;
-  private losses = 0;
-  private aiMove = { dir: Vector3.Zero(), speed: 0 };
+  /** Siege je Team (Duell) */
+  private teamWins: number[] = [0, 0];
   private camLook = new Vector3(0, 1.5, 0);
+  private difficulty: number;
 
   constructor(
     private readonly scene: Scene,
     private readonly camera: FreeCamera,
     private arena: Arena,
-    playerG: Gladiator,
-    foeG: Gladiator,
+    private readonly pool: Gladiator[],
+    private readonly makeGladiator: () => Gladiator,
     private readonly input: TouchInput,
     private readonly hud: HudHooks,
     difficulty: number,
     readonly sound: Sound,
   ) {
-    this.player = new Fighter(playerG, 'Du', this);
-    this.foe = new Fighter(foeG, 'Gegner', this);
-    this.player.target = this.foe;
-    this.foe.target = this.player;
-    this.ai = new AiController(this.foe, this.player, difficulty);
-    this.ai.special = () => this.special(this.foe);
+    this.difficulty = difficulty;
     this.fx = new Fx(scene);
     this.gore = new Gore(scene, this.fx, () => this.arena.play);
     this.spec = new Spectacle(() => this.arena.crowd, sound, {
       now: () => this.now,
       isAuthority: () => this.role !== 'guest',
-      player: () => this.player,
-      foe: () => this.foe,
+      fighters: () => this.fighters,
+      opp: (f) => this.opp(f),
+      byIdx: (i) => this.fighters[i] ?? this.player,
       hint: (t, sec) => this.hud.hint(t, sec),
-      float: (f, t, good) => this.float(this.chest(f), t, (f === this.player) === good ? 'good' : 'bad'),
+      float: (f, t, good) => this.float(this.chest(f), t, f, good),
       send: (ev) => this.send('ev', ev),
       vote: (p, label) => this.hud.vote(p, label),
       thumb: (v) => this.hud.thumb(v),
       heal: (f, hp) => {
         f.g.hp = Math.min(f.stats.hpMax, f.g.hp + hp);
         f.g.stamina = f.stats.staminaMax;
-        this.float(this.chest(f), `Geschenk des Volkes +${hp}`, f === this.player ? 'good' : 'bad');
+        this.float(this.chest(f), `Geschenk des Volkes +${hp}`, f, true);
         if (f === this.player) this.hud.hint('Das Publikum liebt dich: Wein und Brot fliegen in die Arena!', 2.5);
       },
       pelt: (f) => {
         f.stagger(0.6, 'hit_head', 1.2);
         f.drain(15);
-        this.float(this.chest(f), 'Faules Obst!', f === this.player ? 'bad' : 'good');
+        this.float(this.chest(f), 'Faules Obst!', f, false);
         if (f === this.player) this.hud.hint('Das Publikum bewirft dich – zeig mehr Mut!', 2.5);
       },
       finisher: (w, l) => this.finisher(w, l),
       done: (v) => this.ceremonyDone(v),
     });
-    this.resetPositions();
-    hud.score(0, 0);
+    // Start: Duell gegen eine KI (bis das Menü etwas anderes festlegt)
+    const base = (team: number, owner: string): FighterSetup => ({
+      cls: 'murmillo',
+      kit: CLASSES.murmillo.kit,
+      tiers: [1, 1, 1, 1, 1],
+      stats: { hpMax: 100, staminaMax: 100, staminaRegen: 20, lightMul: 1, heavyMul: 1, headMul: 1, bashMul: 1, windupMul: 1, rollMul: 1, moveMul: 1, parryBonus: 0, gloriaMul: 1 },
+      info: { name: owner === 'ai' ? 'Gegner' : 'Du', level: 1 },
+      team,
+      owner,
+      ai: difficulty,
+    });
+    this.applySetup({ mode: 'duel', fighters: [base(0, 'local'), base(1, 'ai')] }, 'local');
   }
 
-  readonly spec: Spectacle;
-  readonly gore: Gore;
-  private weaponBlood = new Map<Fighter, number>();
+  /* ---------- Kämpfer und Teams ---------- */
 
-  /** Brutalität: voll, reduziert, aus */
-  setGore(level: GoreLevel): void {
-    this.gore.level = level;
-    this.fx.goreMul = level === 'full' ? 1 : level === 'reduced' ? 0.4 : 0;
+  /** Der eigene Kämpfer */
+  get player(): Fighter {
+    return this.fighters[this.meIdx];
   }
 
-  /** Index aus Sicht des Gastgebers: 0 = Gastgeber-Figur, 1 = Gast-Figur */
-  private idx(f: Fighter): 0 | 1 {
-    const hostFig = this.role === 'guest' ? this.foe : this.player;
-    return f === hostFig ? 0 : 1;
+  /** Das aktuelle Ziel des eigenen Kämpfers (für Kamera, Anzeige) */
+  get foe(): Fighter {
+    const p = this.player;
+    return (p.target && p.target.mode !== 'dead' ? p.target : this.nearestEnemy(p)) ?? p.target ?? this.fighters.find((f) => f !== p) ?? p;
+  }
+
+  /** Erste KI (für Tests und Schwierigkeit) */
+  get ai(): AiController {
+    return [...this.ais.values()][0] ?? new AiController(this.player, () => null, 0);
+  }
+
+  private enemies(f: Fighter): Fighter[] {
+    return this.fighters.filter((o) => o !== f && o.team !== f.team && o.mode !== 'dead');
+  }
+
+  private nearestEnemy(f: Fighter): Fighter | null {
+    let best: Fighter | null = null;
+    let bd = Infinity;
+    for (const o of this.enemies(f)) {
+      const d = Vector3.DistanceSquared(o.pos, f.pos);
+      if (d < bd) {
+        bd = d;
+        best = o;
+      }
+    }
+    return best;
+  }
+
+  /** Gegenüber eines Kämpfers: sein Ziel, sonst der nächste Gegner */
+  private opp(f: Fighter): Fighter | null {
+    if (f.target && f.target.mode !== 'dead' && f.target.team !== f.team) return f.target;
+    return this.nearestEnemy(f);
+  }
+
+  private idx(f: Fighter): number {
+    return this.fighters.indexOf(f);
   }
 
   private byIdx(w: number): Fighter {
-    if (this.role === 'guest') return w === 0 ? this.foe : this.player;
-    return w === 0 ? this.player : this.foe;
+    return this.fighters[w] ?? this.player;
   }
 
-  /** Körperteil abtrennen (auch beim Gast) */
-  private sever(f: Fighter, part: SeverPart, dir: Vector3, power = 1): void {
-    if (!this.gore.sever(f.g, part, dir, power)) return;
-    this.sfx('hit', true);
-    this.setShake(0.6);
-    if (Vector3.Distance(this.camera.position, f.pos) < 5) this.hud.screenBlood?.(1);
-    this.send('ev', { k: 'sever', w: this.idx(f), part, d: [dir.x, dir.y, dir.z], pw: power });
+  private isRemote(f: Fighter): boolean {
+    return f.owner !== 'local' && f.owner !== 'ai';
   }
 
-  /** Wunde am Körper an der Trefferstelle */
-  private wound(f: Fighter, contact: Vector3, size: number): void {
-    const bone = f.g.nodes.get(contact.y > f.pos.y + f.g.chestHeight + 0.1 ? 'spine_03' : 'spine_02') ?? f.g.nodes.get('spine_02');
-    if (!bone) return;
-    this.fx.wound(f.g.id, bone, contact, size);
-    this.send('ev', { k: 'wound', w: this.idx(f), p: [contact.x, contact.y, contact.z], s: size });
-  }
+  private nextTargetCheck = 0;
 
-  /** Blut an der Waffe des Angreifers */
-  private bloodyWeapon(f: Fighter, add: number): void {
-    const k = Math.min(1, (this.weaponBlood.get(f) ?? 0) + add * this.fx.goreMul);
-    this.weaponBlood.set(f, k);
-    f.g.setWeaponBlood(k);
-    this.send('ev', { k: 'wblood', w: this.idx(f), v: k });
-  }
-
-  /** Blutung bei wenig Leben: Tropfen, Flecken im Sand */
-  private bleed(dt: number): void {
-    for (const f of [this.player, this.foe]) {
-      if (f.mode === 'dead' && f.g.severedParts === 0) continue;
-      const hpk = f.g.hp / f.stats.hpMax;
-      const rate = f.mode === 'dead' ? 3 : hpk < 0.5 ? (0.5 - hpk) * 14 : 0;
-      if (rate > 0 && Math.random() < rate * dt) {
-        this.fx.drip(f.pos.add(new Vector3((Math.random() - 0.5) * 0.3, f.g.chestHeight * (0.4 + Math.random() * 0.6), (Math.random() - 0.5) * 0.3)), 3);
+  /** Ziele wählen: tote oder fehlende Ziele ersetzen, KI wechselt ab und zu */
+  private updateTargets(force = false): void {
+    if (this.role === 'guest') return;
+    if (!force && this.now < this.nextTargetCheck) return;
+    this.nextTargetCheck = this.now + 0.3;
+    for (const f of this.fighters) {
+      if (f.mode === 'dead') continue;
+      const bad = !f.target || f.target.mode === 'dead' || f.target.team === f.team;
+      if (bad) {
+        f.target = this.nearestEnemy(f);
+        continue;
+      }
+      // KI: gelegentlich neu entscheiden, damit nicht alle auf denselben gehen
+      if (f.owner === 'ai' && Math.random() < 0.04) {
+        const options = this.enemies(f);
+        if (options.length > 1) {
+          let best = f.target;
+          let bs = Infinity;
+          for (const o of options) {
+            const s = Vector3.Distance(o.pos, f.pos) * (0.6 + Math.random() * 0.9) + (o === this.player ? 0.6 : 0);
+            if (s < bs) {
+              bs = s;
+              best = o;
+            }
+          }
+          f.target = best;
+        }
       }
     }
   }
 
-  /** Beim tödlichen Treffer: was fliegt weg? */
-  private goreKill(D: Fighter, push: Vector3, a: ActiveAttack | null, final: boolean): void {
-    if (this.gore.level !== 'full') return;
-    const big = !!a && (a.heavy || a.combo === 3 || a.power > 1.2);
-    if (Math.random() > (big ? 0.7 : 0.3)) return;
-    const r = Math.random();
-    // Im letzten Kampf bleibt der Kopf dran – der Kaiser entscheidet noch
-    let part: SeverPart = r < 0.42 && !final ? 'head' : r < 0.67 ? 'armR' : r < 0.8 ? 'armL' : Math.random() < 0.5 ? 'legL' : 'legR';
-    if (final && part === 'head') part = 'armR';
-    this.sever(D, part, push, big ? 1.4 : 1);
-    if (big && Math.random() < 0.3) {
-      const second: SeverPart = part === 'armR' ? 'armL' : 'armR';
-      this.later(0.12, () => this.sever(D, second, push.add(new Vector3(0, 0, 0)), 1.1));
+  /** Ziel wechseln (Aufschalt-Taste bei mehreren Gegnern) */
+  private cycleTarget(f: Fighter): void {
+    const list = this.enemies(f).sort((a, b) => Vector3.Distance(a.pos, f.pos) - Vector3.Distance(b.pos, f.pos));
+    if (!list.length) return;
+    const i = f.target ? list.indexOf(f.target) : -1;
+    f.target = list[(i + 1) % list.length];
+    if (f === this.player) this.hud.foeName(`${f.target.info.name} · Stufe ${f.target.info.level}`);
+  }
+
+  /** Vorrat an Figuren: bei Bedarf weitere erzeugen */
+  private gladiator(i: number): Gladiator {
+    while (this.pool.length <= i) this.pool.push(this.makeGladiator());
+    return this.pool[i];
+  }
+
+  /** Kämpfer nach Plan aufstellen (Training, Gastgeber, Gast) */
+  private applySetup(setup: MatchSetup, meOwner: string): void {
+    for (const t of this.trails.values()) t.dispose();
+    this.trails.clear();
+    this.remoteAtk.clear();
+    this.remoteIn.clear();
+    this.ais.clear();
+    this.aiMoves.clear();
+    this.mode = setup.mode;
+    this.setups = setup.fighters;
+    this.fighters = setup.fighters.map((fs, i) => {
+      const g = this.gladiator(i);
+      g.animator.listener = null;
+      g.animator.resume('death');
+      g.animator.stop('death');
+      g.animator.stop('get_up');
+      g.setActive(true);
+      const f = new Fighter(g, fs.info.name, this);
+      f.stats = fs.stats;
+      f.info = fs.info;
+      f.team = fs.team;
+      f.owner = fs.owner;
+      f.weather = { ...this.weatherRules };
+      this.setClass(f, fs.cls, fs.kit, fs.tiers);
+      g.setTeam(TEAM_COLORS[fs.team % TEAM_COLORS.length]);
+      return f;
+    });
+    for (let i = setup.fighters.length; i < this.pool.length; i++) this.pool[i].setActive(false);
+    this.meIdx = Math.max(0, this.fighters.findIndex((f) => f.owner === meOwner));
+    if (this.role !== 'guest') {
+      for (const [i, f] of this.fighters.entries()) {
+        if (f.owner !== 'ai') continue;
+        const ai = new AiController(f, () => f.target, setup.fighters[i].ai ?? this.difficulty);
+        ai.special = () => this.special(f);
+        ai.specialKind = CLASSES[f.cls].special.id;
+        this.ais.set(f, ai);
+      }
     }
   }
+
+  private weatherRules = { regenMul: 1, rollCostMul: 1 };
+
+  /* ---------- Einstellungen ---------- */
+
+  private weaponBlood = new Map<Fighter, number>();
   private trails = new Map<Fighter, TrailMesh>();
   private trailMat: StandardMaterial | null = null;
   private remoteAtk = new Map<Fighter, number>();
   private fovKick = 0;
   private baseFov = 0.8;
   private lockRange = COMBAT.lockRange;
+  private slowmo = 0;
+  private pendingResult: Omit<MatchResult, 'verdict'> | null = null;
+  blockAssist: 'off' | 'show' | 'auto' = 'show';
+
+  /** Brutalität: voll, reduziert, aus */
+  setGore(level: GoreLevel): void {
+    this.gore.level = level;
+    this.fx.goreMul = level === 'full' ? 1 : level === 'reduced' ? 0.4 : 0;
+  }
 
   /** Andere Arena (nach dem Umbau der Szene) */
   setArena(a: Arena): void {
@@ -265,133 +372,133 @@ export class Game implements FighterEvents {
     return this.arena.kind;
   }
 
-  /** Wetterregeln für beide Kämpfer */
+  /** Wetterregeln für alle Kämpfer */
   setWeatherRules(r: { regenMul: number; rollCostMul: number; lockRange: number }): void {
     this.lockRange = r.lockRange;
-    for (const f of [this.player, this.foe]) f.weather = { regenMul: r.regenMul, rollCostMul: r.rollCostMul };
-  }
-  private slowmo = 0;
-  private pendingResult: Omit<MatchResult, 'verdict'> | null = null;
-
-  /** Ton lokal abspielen und beim Gast auch */
-  private sfx(n: 'clash' | 'block' | 'hit' | 'whoosh' | 'fall' | 'horn', h = false): void {
-    (this.sound[n] as (h: boolean) => void).call(this.sound, h);
-    this.send('ev', { k: 'sfx', n, h });
-  }
-
-  private deed(d: Deed, f: Fighter): void {
-    this.spec.note(d, f, f === this.player ? this.foe : this.player);
-    // Herausforderung: das Publikum jubelt doppelt
-    if (this.now < this.challengeUntil) this.spec.note(d, f, f === this.player ? this.foe : this.player);
-  }
-
-  private resetPositions(): void {
-    this.player.g.root.position.set(0, 0, -3.2);
-    this.player.g.setHeading(0);
-    this.foe.g.root.position.set(0, 0, 3.2);
-    this.foe.g.setHeading(Math.PI);
-    this.yaw = 0;
+    this.weatherRules = { regenMul: r.regenMul, rollCostMul: r.rollCostMul };
+    for (const f of this.fighters) f.weather = { ...this.weatherRules };
   }
 
   setDifficulty(i: number): void {
-    this.ai.setLevel(i);
+    this.difficulty = i;
+    for (const a of this.ais.values()) a.setLevel(i);
   }
 
+  /** Klasse eines Kämpfers setzen: Werte, Aussehen, Sonderfähigkeit */
+  setClass(f: Fighter, cls: ClassId, kit: Kit = CLASSES[cls].kit, tiers: [number, number, number, number, number] = [1, 1, 1, 1, 1]): void {
+    f.cls = cls;
+    f.kit = kit;
+    f.g.equip({ cls, tiers });
+    const ai = this.ais.get(f);
+    if (ai) ai.specialKind = CLASSES[cls].special.id;
+  }
 
-  /* ---------- Netzwerk ---------- */
+  /* ---------- Match ---------- */
 
   role: Role = 'solo';
   private net: Transport | null = null;
+  private boundNet: Transport | null = null;
   private snapTimer = 0;
   private inTimer = 0;
   private snaps: Snap[] = [];
-  private remoteGuest: { p: [number, number]; h: number; ly: number; v: [number, number]; bw: boolean } | null = null;
+  private remoteIn = new Map<Fighter, InMsg>();
   private guestRollUntil = 0;
   private foeAttackLocal: { d: Dir; hv: boolean; impactAt: number; wu: number } | null = null;
   onNetEnd: ((reason: string) => void) | null = null;
+  onMatchEnd: ((r: MatchResult) => void) | null = null;
+  onRematch: (() => void) | null = null;
+  matchOver = false;
 
-  /** Wechselt die Rolle. Gastgeber: der Gegner wird vom Gast gesteuert. Gast: das eigene Handy zeigt nur an. */
-  startNet(role: Role, net: Transport, setup: NetSetup): void {
+  /** Training: alles läuft auf diesem Handy */
+  startSolo(setup: MatchSetup): void {
+    this.role = 'solo';
+    this.net = null;
+    this.applySetup(setup, 'local');
+    this.rematch();
+  }
+
+  /** Mehrspieler: Gastgeber rechnet, Gast zeigt an. meOwner = eigene Kennung im Plan */
+  startNet(role: Role, net: Transport, setup: MatchSetup, meOwner: string): void {
     this.role = role;
     this.net = net;
-    // Vor dem Rollentausch: player = Gastgeber-Figur, foe = Gast-Figur
-    this.player.stats = setup.stats[0];
-    this.player.info = setup.info[0];
-    this.foe.stats = setup.stats[1];
-    this.foe.info = setup.info[1];
-    if (setup.cls && setup.kits && setup.tiers) {
-      this.setClass(this.player, setup.cls[0], setup.kits[0], setup.tiers[0]);
-      this.setClass(this.foe, setup.cls[1], setup.kits[1], setup.tiers[1]);
+    this.applySetup(setup, meOwner);
+    if (this.boundNet !== net) {
+      this.boundNet = net;
+      if (role === 'guest') {
+        net.on('snap', (d) => this.onSnap(d as { f: NetFighter[]; x?: number }));
+        net.on('anim', (d) => {
+          const m = d as { w: number; cmd: AnimCmd };
+          this.fighters[m.w]?.g.animator.apply(m.cmd);
+        });
+        net.on('ev', (d) => this.onEvent(d as Record<string, unknown>));
+      } else {
+        net.on('in', (d, peer) => {
+          const f = this.fighters.find((x) => x.owner === peer);
+          if (f) this.remoteIn.set(f, d as InMsg);
+        });
+        net.on('act', (d, peer) => {
+          const f = this.fighters.find((x) => x.owner === peer);
+          if (f) this.handleRemote(f, d as NetAction);
+        });
+      }
     }
-    if (role === 'guest') {
-      // Aus Sicht des Gasts ist er selbst der zweite Kämpfer: Rollen tauschen
-      const me = this.foe;
-      const other = this.player;
-      (this as { player: Fighter }).player = me;
-      (this as { foe: Fighter }).foe = other;
-      net.on('snap', (d) => this.onSnap(d as { f: [NetFighter, NetFighter]; x?: number }));
-      net.on('anim', (d) => {
-        const m = d as { w: 0 | 1; cmd: AnimCmd };
-        // w = 0: Gastgeber-Figur (hier Gegner), 1: Gast-Figur (hier ich)
-        (m.w === 0 ? this.foe : this.player).g.animator.apply(m.cmd);
-      });
-      net.on('ev', (d) => this.onEvent(d as Record<string, unknown>));
+    if (role === 'host') {
+      this.fighters.forEach((f, i) => (f.g.animator.listener = (cmd) => net.send('anim', { w: i, cmd })));
+      this.rematch();
+    } else {
       // Reste eines früheren Trainingskampfs aufräumen
-      for (const f of [this.player, this.foe]) {
+      for (const f of this.fighters) {
         if (f.mode === 'dead') {
           f.g.animator.resume('death');
           f.mode = 'free';
         }
       }
-    } else if (role === 'host') {
-      this.player.g.animator.listener = (cmd) => net.send('anim', { w: 0, cmd });
-      this.foe.g.animator.listener = (cmd) => net.send('anim', { w: 1, cmd });
-      net.on('in', (d) => {
-        this.remoteGuest = d as { p: [number, number]; h: number; ly: number; v: [number, number]; bw: boolean };
-      });
-      net.on('act', (d) => this.handleRemote(d as NetAction));
+      this.resetMatch();
     }
-    if (role === 'host') this.rematch();
-    else this.resetMatch();
   }
 
-  /** Netzspiel beenden (Verbindung weg): zurück zum Training */
-  endNet(reason: string): void {
+  /** Ein Gast hat die Arena verlassen (Gastgeber): die KI übernimmt. Gastgeber weg (Gast): zurück ins Menü. */
+  peerLeft(peer: string, name: string): void {
     if (this.role === 'host') {
-      this.player.g.animator.listener = null;
-      this.foe.g.animator.listener = null;
-      this.role = 'solo';
-      this.net = null;
-      if (this.soloFoe) {
-        this.foe.stats = this.soloFoe.stats;
-        this.foe.info = this.soloFoe.info;
+      const f = this.fighters.find((x) => x.owner === peer);
+      if (f) {
+        f.owner = 'ai';
+        f.g.animator.listener = null;
+        const ai = new AiController(f, () => f.target, this.difficulty);
+        ai.special = () => this.special(f);
+        ai.specialKind = CLASSES[f.cls].special.id;
+        this.ais.set(f, ai);
+        this.remoteIn.delete(f);
+        if (this.net) {
+          const i = this.idx(f);
+          f.g.animator.listener = (cmd) => this.net?.send('anim', { w: i, cmd });
+        }
       }
-      this.hud.hint(reason + ' – weiter gegen die KI', 3);
-      this.rematch();
+      const humans = this.fighters.filter((x) => this.isRemote(x)).length;
+      this.hud.hint(`${name} hat die Arena verlassen – die KI übernimmt`, 3);
+      if (humans === 0) {
+        this.role = 'solo';
+        for (const x of this.fighters) x.g.animator.listener = null;
+        this.net = null;
+      }
     } else if (this.role === 'guest') {
-      this.onNetEnd?.(reason);
+      this.onNetEnd?.(name);
     }
   }
 
-  private soloFoe: { stats: Stats; info: FighterInfo } | null = null;
-  onMatchEnd: ((r: MatchResult) => void) | null = null;
-  onRematch: (() => void) | null = null;
-  matchOver = false;
-
-  /** Training: eigene Werte und KI-Gegner festlegen */
-  setupSolo(me: Stats, meInfo: FighterInfo, foe: Stats, foeInfo: FighterInfo, aiLevel: number): void {
-    this.player.stats = me;
-    this.player.info = meInfo;
-    this.foe.stats = foe;
-    this.foe.info = foeInfo;
-    this.soloFoe = { stats: foe, info: foeInfo };
-    this.ai.setLevel(aiLevel);
+  /** Alter Name, wird vom Menü noch genutzt: Gegner weg */
+  endNet(reason: string): void {
+    if (this.role === 'guest') this.onNetEnd?.(reason);
+    else {
+      const remote = this.fighters.find((f) => this.isRemote(f));
+      if (remote) this.peerLeft(remote.owner, reason);
+    }
   }
 
   /** Neuer Kampf: alle wieder auf die Beine, Stand 0:0 */
   rematch(): void {
     if (this.role !== 'guest') {
-      for (const f of [this.player, this.foe]) if (f.mode === 'dead' || f.mode === 'stagger') f.standUp();
+      for (const f of this.fighters) if (f.mode === 'dead' || f.mode === 'stagger') f.standUp();
     }
     this.roundOver = false;
     this.sfx('horn');
@@ -400,8 +507,7 @@ export class Game implements FighterEvents {
   }
 
   resetMatch(): void {
-    this.wins = 0;
-    this.losses = 0;
+    this.teamWins = [0, 0];
     this.matchOver = false;
     this.slowmo = 0;
     this.scene.animationTimeScale = 1;
@@ -409,25 +515,54 @@ export class Game implements FighterEvents {
     this.fx.clearPools();
     this.fx.clearDecals();
     this.fx.clearWounds();
-    this.gore.clear([this.player.g, this.foe.g]);
+    this.gore.clear(this.fighters.map((f) => f.g));
     this.weaponBlood.clear();
-    for (const f of [this.player, this.foe]) f.g.setWeaponBlood(0);
-    this.hud.score(0, 0);
-    this.hud.foeName(`${this.foe.info.name} · Stufe ${this.foe.info.level}`);
-    for (const f of [this.player, this.foe]) {
+    for (const f of this.fighters) {
+      f.g.setWeaponBlood(0);
       if (this.role !== 'guest') f.refill();
       f.parries = 0;
+      f.kills = 0;
       f.damageTaken = 0;
       f.vel.setAll(0);
+      f.target = null;
     }
-    if (this.role !== 'guest') this.resetPositions();
-    else {
-      this.player.g.root.position.set(0, 0, 3.2);
-      this.player.g.setHeading(Math.PI);
-      this.yaw = Math.PI;
-    }
-    this.ai.reset(this.now);
+    // Startplätze (auch beim Gast für die eigene Figur)
+    const spawns = spawnPoints(this.mode, this.setups);
+    this.fighters.forEach((f, i) => {
+      if (this.role === 'guest' && f !== this.player) return;
+      const [x, z, h] = spawns[i];
+      f.g.root.position.set(x, 0, z);
+      f.g.setHeading(h);
+    });
+    this.yaw = this.player.g.heading;
+    this.updateTargets(true);
+    for (const a of this.ais.values()) a.reset(this.now);
+    this.hud.foeName(this.foeLabel());
+    this.updateScore();
   }
+
+  private foeLabel(): string {
+    if (this.mode === 'duel') return `${this.foe.info.name} · Stufe ${this.foe.info.level}`;
+    return `${this.foe.info.name} · Stufe ${this.foe.info.level}`;
+  }
+
+  /** Anzeige oben: Spielstand bzw. wer noch steht */
+  private updateScore(): void {
+    const me = this.player;
+    if (this.mode === 'duel') {
+      const w = this.teamWins[me.team] ?? 0;
+      const l = this.teamWins[1 - me.team] ?? 0;
+      this.hud.score(w + l > 0 ? `${w} : ${l}` : '');
+      return;
+    }
+    const alive = this.fighters.filter((f) => f.mode !== 'dead');
+    if (isTeamMode(this.mode)) {
+      const mine = alive.filter((f) => f.team === me.team).length;
+      this.hud.score(`${mine} : ${alive.length - mine}`);
+    } else this.hud.score(`${alive.length} übrig`);
+  }
+
+  /* ---------- Senden an die Gäste ---------- */
 
   private send(ch: string, data: unknown): void {
     if (this.net && this.role === 'host') this.net.send(ch, data);
@@ -444,11 +579,21 @@ export class Game implements FighterEvents {
     this.send('ev', { k: 'sparks', p: [p.x, p.y, p.z] });
   }
 
-  private float(w: Vector3, text: string, kind: 'good' | 'bad' | 'big' | '' = ''): void {
-    this.hud.floatText(w, text, kind);
-    // Beim Gast ist gut und schlecht vertauscht
-    const swap = kind === 'good' || kind === 'big' ? 'bad' : kind === 'bad' ? 'good' : '';
-    this.send('ev', { k: 'float', p: [w.x, w.y, w.z], t: text, kind: swap });
+  /** Farbe eines Textes aus Sicht des eigenen Kämpfers */
+  private kindFor(subject: Fighter, good: boolean | null, other: Fighter | null, big: boolean): FloatKind {
+    if (good === null) return '';
+    const me = this.player;
+    const friend = (f: Fighter | null) => !!f && (f === me || (f.team === me.team && this.mode !== 'duel'));
+    const pos: FloatKind = big ? 'big' : 'good';
+    if (friend(subject)) return good ? pos : 'bad';
+    if (friend(other)) return good ? 'bad' : pos;
+    return '';
+  }
+
+  /** Schwebender Text: subject = um wen es geht, good = gut für ihn */
+  private float(w: Vector3, text: string, subject: Fighter, good: boolean | null, other: Fighter | null = null, big = false): void {
+    this.hud.floatText(w, text, this.kindFor(subject, good, other, big));
+    this.send('ev', { k: 'float', p: [w.x, w.y, w.z], t: text, s: this.idx(subject), o: other ? this.idx(other) : -1, g: good, b: big });
   }
 
   private setShake(v: number): void {
@@ -462,8 +607,38 @@ export class Game implements FighterEvents {
   }
 
   private impulse(f: Fighter, v: Vector3): void {
-    if (this.role === 'host' && f === this.foe) this.send('ev', { k: 'push', v: [v.x, v.z] });
+    if (this.role === 'host' && this.isRemote(f)) this.send('ev', { k: 'push', w: this.idx(f), v: [v.x, v.z] });
     else f.vel.addInPlace(v);
+  }
+
+  /** Bildschirm-Rückmeldung je nach Beteiligung */
+  private hitFx(A: Fighter, D: Fighter, kind: HitFx): void {
+    this.applyHitFx(A, D, kind);
+    this.send('ev', { k: 'hfx', a: this.idx(A), d: this.idx(D), x: kind });
+  }
+
+  private applyHitFx(A: Fighter, D: Fighter, kind: HitFx): void {
+    const me = this.player;
+    let f: 'hurt' | 'parry' | 'strike' | null = null;
+    if (kind === 'parry') f = D === me ? 'parry' : null;
+    else if (D === me) f = 'hurt';
+    else if (A === me && kind === 'big') f = 'strike';
+    if (!f) return;
+    this.hud.flash?.(f);
+    this.fovKick = Math.max(this.fovKick, f === 'strike' ? 0.09 : f === 'hurt' ? 0.06 : 0.04);
+  }
+
+  /** Ton lokal abspielen und bei den Gästen auch */
+  private sfx(n: 'clash' | 'block' | 'hit' | 'whoosh' | 'fall' | 'horn', h = false): void {
+    (this.sound[n] as (h: boolean) => void).call(this.sound, h);
+    this.send('ev', { k: 'sfx', n, h });
+  }
+
+  private deed(d: Deed, f: Fighter): void {
+    const o = this.opp(f) ?? f;
+    this.spec.note(d, f, o);
+    // Herausforderung: das Publikum jubelt doppelt
+    if (this.now < this.challengeUntil) this.spec.note(d, f, o);
   }
 
   private netFighter(f: Fighter): NetFighter {
@@ -481,13 +656,13 @@ export class Game implements FighterEvents {
       ex: f.exhausted,
       fv: Math.round(f.favor),
       sc: Math.max(0, Math.round((f.specialReadyAt - this.now) * 10) / 10),
+      t: f.target ? this.idx(f.target) : -1,
       at: a && this.now < a.impactAt ? { d: a.dir, hv: a.heavy, ii: a.impactAt - this.now, wu: a.impactAt - a.start } : null,
     };
   }
 
-  /** Gastgeber: Eingabe des Gasts ausführen */
-  private handleRemote(a: NetAction): void {
-    const f = this.foe;
+  /** Gastgeber: Eingabe eines Gasts ausführen */
+  private handleRemote(f: Fighter, a: NetAction): void {
     if (f.mode === 'dead' || this.spec.inCeremony) return;
     switch (a.type) {
       case 'light':
@@ -510,8 +685,15 @@ export class Game implements FighterEvents {
       case 'special':
         this.special(f);
         break;
+      case 'target':
+        this.cycleTarget(f);
+        break;
     }
   }
+
+  /* ---------- Gast ---------- */
+
+  private guestVerdict: Verdict = 'missio';
 
   /** Gast: Ereignis vom Gastgeber */
   private onEvent(e: Record<string, unknown>): void {
@@ -540,16 +722,19 @@ export class Game implements FighterEvents {
         if (bone) this.fx.wound(f.g.id, bone, c, e.s as number);
         break;
       }
-      case 'wblood': {
-        const f = this.byIdx(e.w as number);
-        f.g.setWeaponBlood(e.v as number);
+      case 'wblood':
+        this.byIdx(e.w as number).g.setWeaponBlood(e.v as number);
         break;
-      }
       case 'sparks':
         this.fx.sparksAt(v3(e.p));
         break;
-      case 'float':
-        this.hud.floatText(v3(e.p), e.t as string, e.kind as 'good' | 'bad' | '');
+      case 'float': {
+        const o = e.o as number;
+        this.hud.floatText(v3(e.p), e.t as string, this.kindFor(this.byIdx(e.s as number), e.g as boolean | null, o >= 0 ? this.byIdx(o) : null, !!e.b));
+        break;
+      }
+      case 'hfx':
+        this.applyHitFx(this.byIdx(e.a as number), this.byIdx(e.d as number), e.x as HitFx);
         break;
       case 'shake':
         this.shake = e.v as number;
@@ -558,25 +743,38 @@ export class Game implements FighterEvents {
         this.hitStop = e.v as number;
         break;
       case 'push': {
+        if (e.w !== this.meIdx) break;
         const v = e.v as number[];
         this.player.vel.addInPlace(new Vector3(v[0], 0, v[1]));
         break;
       }
       case 'msg':
-        this.hud.hint(e.t as string, 1.4);
+        if (e.w === undefined || e.w === this.meIdx) this.hud.hint(e.t as string, 1.4);
         break;
       case 'round': {
-        const s = e.s as [number, number];
-        this.wins = s[1];
-        this.losses = s[0];
-        this.hud.score(this.wins, this.losses);
+        const s = e.s as number[];
+        this.teamWins = s;
+        // Tötungen und Paraden zählt der Gastgeber
+        (e.ks as [number, number][] | undefined)?.forEach(([k, p], i) => {
+          const f = this.fighters[i];
+          if (f) {
+            f.kills = k;
+            f.parries = p;
+          }
+        });
+        this.updateScore();
+        const won = e.wt === this.player.team;
         if (e.m) {
           this.matchOver = true;
-          const par = e.p as [number, number];
-          this.pendingResult = { won: e.w === 'guest', wins: this.wins, losses: this.losses, foe: this.foe.info, parries: par[1], pvp: true };
-        } else this.hud.hint(e.w === 'guest' ? 'Sieg! Der Gegner liegt im Sand.' : 'Du bist gefallen …', 3.5);
+          this.pendingResult = this.makeResult(won);
+          if (this.mode !== 'duel') this.hud.hint(won ? 'Sieg! Die Arena gehört euch.' : 'Niederlage …', 3);
+        } else this.hud.hint(won ? 'Sieg! Der Gegner liegt im Sand.' : 'Du bist gefallen …', 3.5);
         break;
       }
+      case 'dead':
+        this.updateScore();
+        if (e.w === this.meIdx) this.hud.hint('Du bist gefallen – schau zu, wie dein Team kämpft', 3);
+        break;
       case 'rematch':
         this.resetMatch();
         this.onRematch?.();
@@ -592,12 +790,6 @@ export class Game implements FighterEvents {
         this.netOn(new Vector3(pp[0], 0, pp[1]), e.d as number);
         break;
       }
-      case 'flash':
-        if (e.f !== 'none') {
-          this.hud.flash?.(e.f as 'hurt' | 'parry' | 'strike');
-          this.fovKick = 0.06;
-        }
-        break;
       case 'pool': {
         const pp = e.p as number[];
         this.fx.pool(new Vector3(pp[0], 0, pp[1]));
@@ -616,7 +808,7 @@ export class Game implements FighterEvents {
         this.pendingResult = null;
         break;
       case 'next':
-        this.gore.clear([this.player.g, this.foe.g]);
+        this.gore.clear(this.fighters.map((f) => f.g));
         this.fx.clearWounds();
         this.hud.hint('Nächste Runde – kämpft!', 2);
         break;
@@ -624,59 +816,65 @@ export class Game implements FighterEvents {
   }
 
   /** Gast: Schnappschuss empfangen */
-  private guestVerdict: Verdict = 'missio';
-
-  private onSnap(d: { f: [NetFighter, NetFighter]; x?: number }): void {
+  private onSnap(d: { f: NetFighter[]; x?: number }): void {
     if (typeof d.x === 'number') this.spec.setRemoteExcite(d.x);
     this.snaps.push({ f: d.f, recv: performance.now() });
     if (this.snaps.length > 3) this.snaps.shift();
-    const host = d.f[0];
-    const me = d.f[1];
-    // Eigener Zustand: Leben, Ausdauer, Modus kommen vom Gastgeber
-    const p = this.player;
-    p.g.hp = me.hp;
-    p.g.stamina = me.st;
-    p.favor = me.fv ?? 50;
-    p.specialReadyAt = this.now + (me.sc ?? 0);
-    if (this.spec.inCeremony) {
-      // Während der Zeremonie bestimmt der Gastgeber auch die eigene Figur
-      p.pos.x = me.p[0];
-      p.pos.z = me.p[1];
-      p.g.setHeading(me.h);
-    }
-    p.exhaustedUntil = me.ex ? this.now + 0.2 : 0;
-    if (this.now >= this.guestRollUntil) p.mode = me.m as Fighter['mode'];
-    const f = this.foe;
-    f.g.hp = host.hp;
-    f.g.stamina = host.st;
-    f.favor = host.fv ?? 50;
-    f.mode = host.m as Fighter['mode'];
-    this.foeAttackLocal = host.at ? { d: host.at.d, hv: host.at.hv, impactAt: this.now + host.at.ii, wu: host.at.wu } : null;
-    if (host.at) this.remoteAtk.set(f, this.now + host.at.ii);
-    if (me.at) this.remoteAtk.set(p, this.now + me.at.ii);
+    d.f.forEach((n, i) => {
+      const f = this.fighters[i];
+      if (!f) return;
+      f.g.hp = n.hp;
+      f.g.stamina = n.st;
+      f.favor = n.fv ?? 50;
+      f.target = n.t >= 0 ? (this.fighters[n.t] ?? null) : null;
+      if (n.at) this.remoteAtk.set(f, this.now + n.at.ii);
+      if (f === this.player) {
+        f.specialReadyAt = this.now + (n.sc ?? 0);
+        if (this.spec.inCeremony) {
+          // Während der Zeremonie bestimmt der Gastgeber auch die eigene Figur
+          f.pos.x = n.p[0];
+          f.pos.z = n.p[1];
+          f.g.setHeading(n.h);
+        }
+        f.exhaustedUntil = n.ex ? this.now + 0.2 : 0;
+        if (this.now >= this.guestRollUntil) f.mode = n.m as Fighter['mode'];
+      } else {
+        f.mode = n.m as Fighter['mode'];
+        f.blockWanted = n.bl;
+        if ((n.m === 'block') !== f.blocking) f.mode = n.m as Fighter['mode'];
+      }
+    });
+    const tgt = this.player.target;
+    const ti = tgt ? this.idx(tgt) : -1;
+    const ta = ti >= 0 ? d.f[ti]?.at : null;
+    this.foeAttackLocal = ta && tgt?.target === this.player ? { d: ta.d, hv: ta.hv, impactAt: this.now + ta.ii, wu: ta.wu } : null;
   }
 
-  /** Gast: Gegner zwischen den letzten zwei Schnappschüssen glätten */
-  private interpolateFoe(): void {
+  /** Gast: andere Kämpfer zwischen den letzten zwei Schnappschüssen glätten */
+  private interpolateOthers(): void {
     if (this.snaps.length === 0) return;
     const b = this.snaps[this.snaps.length - 1];
     const a = this.snaps.length > 1 ? this.snaps[this.snaps.length - 2] : b;
     const span = Math.max(1, b.recv - a.recv);
     const t = Math.min(1, (performance.now() - b.recv) / span);
-    const A = a.f[0];
-    const B = b.f[0];
-    const f = this.foe;
-    f.pos.x = A.p[0] + (B.p[0] - A.p[0]) * t;
-    f.pos.z = A.p[1] + (B.p[1] - A.p[1]) * t;
-    f.g.setHeading(A.h + angleDiff(A.h, B.h) * t);
-    f.g.legYaw = A.ly + (B.ly - A.ly) * t;
-    f.g.animator.setSpeed(B.sp, B.bw);
+    this.fighters.forEach((f, i) => {
+      if (f === this.player) return;
+      const A = a.f[i];
+      const B = b.f[i];
+      if (!A || !B) return;
+      f.pos.x = A.p[0] + (B.p[0] - A.p[0]) * t;
+      f.pos.z = A.p[1] + (B.p[1] - A.p[1]) * t;
+      f.g.setHeading(A.h + angleDiff(A.h, B.h) * t);
+      f.g.legYaw = A.ly + (B.ly - A.ly) * t;
+      f.g.animator.setSpeed(B.sp, B.bw);
+    });
   }
 
   /** Gast: Eingabe ans Gastgeber-Handy */
   private sendGuestAction(a: Action): void {
     if (!this.net) return;
     const p = this.player;
+    if (p.mode === 'dead' && a.type !== 'lock') return;
     switch (a.type) {
       case 'block':
         this.net.send('act', a);
@@ -709,11 +907,12 @@ export class Game implements FighterEvents {
         this.net.send('act', a);
         break;
       case 'lock':
-        this.locked = !this.locked;
-        this.manualUnlock = !this.locked;
-        this.hud.setLocked(this.locked);
-        break;
-      default:
+        if (this.locked && this.enemies(p).length > 1) this.net.send('act', { type: 'target' });
+        else {
+          this.locked = !this.locked;
+          this.manualUnlock = !this.locked;
+          this.hud.setLocked(this.locked);
+        }
         break;
     }
   }
@@ -730,26 +929,21 @@ export class Game implements FighterEvents {
       this.hitStop -= dt;
       this.scene.animationTimeScale = this.hitStop > 0 ? 0.06 : 1;
     }
-    const dist = Vector3.Distance(this.player.pos, this.foe.pos);
-    if (!this.locked && !this.manualUnlock && dist < this.lockRange) {
-      this.locked = true;
-      this.hud.setLocked(true);
-    }
-    this.input.locked = this.locked;
+    this.autoLock();
     const acts = this.input.takeActions();
     if (!this.spec.inCeremony) for (const a of acts) this.sendGuestAction(a);
-    this.interpolateFoe();
-    if (this.now >= this.guestRollUntil && this.player.mode === 'roll') this.player.mode = 'free';
-    if (!this.spec.inCeremony) {
+    this.interpolateOthers();
+    const p = this.player;
+    if (this.now >= this.guestRollUntil && p.mode === 'roll') p.mode = 'free';
+    if (!this.spec.inCeremony && p.mode !== 'dead') {
       this.movePlayer(dt);
-      this.integrate(this.player, dt);
+      this.integrate(p, dt);
     }
-    for (const f of [this.player, this.foe]) f.g.animator.update(dt);
+    for (const f of this.fighters) f.g.animator.update(dt);
     // Eingabe an den Gastgeber (30-mal pro Sekunde)
     this.inTimer += dt;
     if (this.inTimer >= 1 / 30 && this.net) {
       this.inTimer = 0;
-      const p = this.player;
       this.net.send('in', { p: [p.pos.x, p.pos.z], h: p.g.heading, ly: p.g.legYaw, v: [p.vel.x, p.vel.z], bw: p.backwards });
     }
     this.fx.update(dt);
@@ -757,32 +951,13 @@ export class Game implements FighterEvents {
     this.bleed(dt);
     this.updateProjectiles(dt);
     this.updateCamera(dt);
-    this.hud.favor(this.player.favor, this.foe.favor);
-    this.updateSpecialHud();
-    // HUD: Angriff des Gegners aus dem Schnappschuss
-    this.hud.setBars(this.pct(this.player, 'hp'), this.pct(this.player, 'st'), this.player.exhausted);
-    const fa = this.foeAttackLocal;
-    if (!this.locked || this.foe.mode === 'dead') this.hud.guard(null);
-    else
-      this.hud.guard({
-        anchor: this.foe.pos.add(new Vector3(0, this.foe.g.chestHeight - 0.05, 0)),
-        blocking: this.player.blocking,
-        foeBlocking: this.foe.blocking,
-        incoming: !!fa && this.now < fa.impactAt,
-        heavy: !!fa?.hv,
-        impactIn: fa && this.now < fa.impactAt && this.blockAssist !== 'off' ? fa.impactAt - this.now : null,
-        windup: fa?.wu ?? 1,
-        parryWindow: COMBAT.parryWindow + this.player.stats.parryBonus,
-        foeHp: this.pct(this.foe, 'hp'),
-        foeSt: this.pct(this.foe, 'st'),
-      });
+    this.updateHud();
   }
 
-  /** Gastgeber: Position des Gasts übernehmen (mit Plausibilitätsprüfung) und Schnappschüsse senden */
+  /** Gastgeber: Positionen der Gäste übernehmen (mit Plausibilitätsprüfung) und Schnappschüsse senden */
   private updateHostNet(dt: number): void {
-    const r = this.remoteGuest;
-    const f = this.foe;
-    if (r && !this.spec.inCeremony) {
+    for (const [f, r] of this.remoteIn) {
+      if (this.spec.inCeremony || f.mode === 'dead') continue;
       const dx = r.p[0] - f.pos.x;
       const dz = r.p[1] - f.pos.z;
       const d = Math.hypot(dx, dz);
@@ -799,14 +974,16 @@ export class Game implements FighterEvents {
     this.snapTimer += dt;
     if (this.snapTimer >= 0.05 && this.net) {
       this.snapTimer = 0;
-      this.net.send('snap', { f: [this.netFighter(this.player), this.netFighter(this.foe)], x: Math.round(this.spec.excite * 100) / 100 });
+      this.net.send('snap', { f: this.fighters.map((f) => this.netFighter(f)), x: Math.round(this.spec.excite * 100) / 100 });
     }
   }
 
   /* ---------- Ereignisse der Kämpfer ---------- */
 
   attackStart(f: Fighter, a: ActiveAttack): void {
-    if (f === this.player && this.role === 'solo') this.ai.onFoeAttack(a, this.now);
+    // Das Ziel (falls KI) bekommt den Angriff mit, wie ein Mensch es sehen würde
+    const v = f.target;
+    if (v) this.ais.get(v)?.onFoeAttack(a, this.now, f);
     const wait = Math.max(0, a.impactAt - this.now - 0.16);
     window.setTimeout(() => {
       if (f.attack === a) this.sfx('whoosh', a.heavy);
@@ -815,7 +992,7 @@ export class Game implements FighterEvents {
 
   message(f: Fighter, text: string): void {
     if (f === this.player) this.hud.hint(text, 1.2);
-    else if (this.role === 'host') this.send('ev', { k: 'msg', t: text });
+    else if (this.role === 'host' && this.isRemote(f)) this.send('ev', { k: 'msg', t: text, w: this.idx(f) });
   }
 
   private chest(f: Fighter): Vector3 {
@@ -827,30 +1004,44 @@ export class Game implements FighterEvents {
     return Math.abs(angleDiff(a.g.heading, Math.atan2(d.x, d.z))) < maxAngle;
   }
 
-  /** Der Treffer-Moment eines Angriffs */
-  impact(A: Fighter, a: ActiveAttack): void {
-    this.resolve(A, a, false);
+  /** Wen trifft ein Schlag? Bevorzugt das Ziel, sonst den nächsten Gegner im Schlagbereich */
+  private victim(A: Fighter, reach: number, angle: number): Fighter | null {
+    const ok = (D: Fighter) => D.mode !== 'dead' && D.team !== A.team && Vector3.Distance(A.pos, D.pos) <= reach && this.inFront(A, D, angle);
+    if (A.target && ok(A.target)) return A.target;
+    let best: Fighter | null = null;
+    let bd = Infinity;
+    for (const D of this.fighters) {
+      if (D === A || !ok(D)) continue;
+      const d = Vector3.Distance(A.pos, D.pos);
+      if (d < bd) {
+        bd = d;
+        best = D;
+      }
+    }
+    return best;
   }
 
-  private grace: { A: Fighter; a: ActiveAttack; at: number }[] = [];
-  blockAssist: 'off' | 'show' | 'auto' = 'show';
+  /** Der Treffer-Moment eines Angriffs */
+  impact(A: Fighter, a: ActiveAttack): void {
+    this.resolve(A, a, false, null);
+  }
+
+  private grace: { A: Fighter; a: ActiveAttack; at: number; D: Fighter }[] = [];
 
   /** Parade, Block oder Treffer. Wer zu spät blockt, bekommt eine kurze Gnadenfrist. */
-  private resolve(A: Fighter, a: ActiveAttack, afterGrace: boolean): void {
-    const D = A === this.player ? this.foe : this.player;
-    if (A.attack !== a || A.mode !== 'attack' || D.mode === 'dead') return;
-    const dist = Vector3.Distance(A.pos, D.pos);
-    if (dist > A.kit.reach || !this.inFront(A, D, COMBAT.maxAngle)) {
-      if (A === this.player) this.sfx('whoosh', false);
+  private resolve(A: Fighter, a: ActiveAttack, afterGrace: boolean, fixed: Fighter | null): void {
+    if (A.attack !== a || A.mode !== 'attack') return;
+    const D = fixed ?? this.victim(A, A.kit.reach, COMBAT.maxAngle);
+    if (!D || D.mode === 'dead') {
+      if (A === this.player && !afterGrace) this.sfx('whoosh', false);
       return;
     }
     const contact = Vector3.Lerp(A.pos, D.pos, 0.65);
     contact.y = D.g.chestHeight + (a.dir === 'top' ? 0.25 : 0);
     const push = D.pos.subtract(A.pos).normalize();
-    const youHit = A === this.player;
 
     if (this.now < D.invulnUntil) {
-      this.float(this.chest(D), 'Ausgewichen', youHit ? 'bad' : 'good');
+      this.float(this.chest(D), 'Ausgewichen', D, true, A);
       this.deed('dodge', D);
       return;
     }
@@ -873,8 +1064,8 @@ export class Game implements FighterEvents {
       this.sparks(contact);
       this.setHitStop(0.16);
       this.setShake(0.35);
-      this.flash(D === this.player ? 'parry' : 'none');
-      this.float(this.chest(D), 'Parade!', youHit ? 'bad' : 'good');
+      this.hitFx(A, D, 'parry');
+      this.float(this.chest(D), 'Parade!', D, true, A);
       if (D === this.player) this.hud.hint('Gegenangriff!', 0.8);
       this.sfx('clash', true);
       this.deed('parry', D);
@@ -883,7 +1074,7 @@ export class Game implements FighterEvents {
 
     if (hooked && D.blocking && facing) {
       facing = false;
-      this.float(this.chest(D), 'Um den Schild!', youHit ? 'big' : 'bad');
+      this.float(this.chest(D), 'Um den Schild!', A, true, D, true);
     }
     // Block
     if (D.blocking && facing) {
@@ -892,13 +1083,13 @@ export class Game implements FighterEvents {
         // Wuchtschlag (oder erschöpft): die Deckung bricht
         const chip = Math.round(a.def.damage * mul * COMBAT.heavyChip);
         this.sparks(contact);
-        this.float(this.chest(D), 'Deckung bricht!', youHit ? 'big' : 'bad');
+        this.float(this.chest(D), 'Deckung bricht!', A, true, D, true);
         this.setHitStop(0.12);
         this.setShake(0.35);
         this.sfx('block', true);
         this.deed('heavy', A);
         D.drain(COMBAT.guardBreak.stamina);
-        if (D.takeHit(chip, 'hit_chest', true)) return this.kill(D, push, a);
+        if (D.takeHit(chip, 'hit_chest', true)) return this.kill(D, push, a, A);
         D.guardBreak(COMBAT.guardBreak.stagger);
         this.impulse(D, push.scale(2.2));
         return;
@@ -908,7 +1099,7 @@ export class Game implements FighterEvents {
       this.impulse(D, push.scale(0.9));
       this.setShake(0.12);
       this.setHitStop(0.05);
-      this.float(this.chest(D), 'Geblockt', youHit ? '' : 'good');
+      this.float(this.chest(D), 'Geblockt', D, true, A);
       if (D.kit.hasShield && Math.random() < 0.7) this.sfx('block', false);
       else this.sfx('clash');
       this.deed('block', D);
@@ -917,7 +1108,7 @@ export class Game implements FighterEvents {
 
     // Knapp zu spät? Kurz warten, ob der Block noch rechtzeitig kommt
     if (!afterGrace && (D.mode === 'free' || D.mode === 'block')) {
-      this.grace.push({ A, a, at: this.now + COMBAT.blockGrace });
+      this.grace.push({ A, a, at: this.now + COMBAT.blockGrace, D });
       return;
     }
 
@@ -942,12 +1133,11 @@ export class Game implements FighterEvents {
     this.bloodyWeapon(A, big ? 0.22 : 0.12);
     this.setShake(big ? 0.5 : 0.26);
     this.setHitStop(big ? 0.13 : 0.07);
-    if (D === this.player) this.flash('hurt');
-    else this.flash(big ? 'strike' : 'none');
-    this.float(this.chest(D), `${zone.name} −${dmg}`, youHit ? (big ? 'big' : 'good') : 'bad');
+    this.hitFx(A, D, big ? 'big' : 'hit');
+    this.float(this.chest(D), `${zone.name} −${dmg}`, A, true, D, big);
     this.sfx('hit', big);
     this.deed(zoneKey === 'top' ? 'head' : a.heavy ? 'heavy' : 'hit', A);
-    if (D.takeHit(dmg, big ? 'knockback' : zone.anim, big)) return this.kill(D, push, a);
+    if (D.takeHit(dmg, big ? 'knockback' : zone.anim, big)) return this.kill(D, push, a, A);
     this.impulse(D, push.scale(big ? 3.2 : 1.6));
   }
 
@@ -958,21 +1148,21 @@ export class Game implements FighterEvents {
   }
 
   bashImpact(A: Fighter): void {
-    const D = A === this.player ? this.foe : this.player;
-    if (A.mode !== 'bash' || D.mode === 'dead') return;
+    if (A.mode !== 'bash') return;
+    const D = this.victim(A, COMBAT.bash.range, 1.0) ?? this.opp(A);
+    if (!D || D.mode === 'dead') return;
     const dist = Vector3.Distance(A.pos, D.pos);
-    const youBash = A === this.player;
     if (dist > COMBAT.bash.range || !this.inFront(A, D, 1.0) || this.now < D.invulnUntil) {
       A.modeUntil += COMBAT.bash.missLock;
-      if (youBash) this.float(this.chest(D), 'Daneben', 'bad');
+      this.float(this.chest(D), 'Daneben', A, false, D);
       return;
     }
     if (D.mode === 'attack' && D.attack && this.now < D.attack.impactAt && !D.blocking) {
-      if (youBash) this.float(this.chest(D), 'Zu langsam', 'bad');
+      this.float(this.chest(D), 'Zu langsam', A, false, D);
       return;
     }
     if (D.mode === 'bash') {
-      this.float(this.chest(D), 'Konter', '');
+      this.float(this.chest(D), 'Konter', D, null);
       this.sparks(this.chest(D));
       return;
     }
@@ -984,43 +1174,158 @@ export class Game implements FighterEvents {
     this.impulse(D, push.scale(wasBlocking ? 4.2 : 3));
     this.setShake(0.3);
     this.setHitStop(0.08);
-    this.float(this.chest(D), wasBlocking ? 'Deckung gebrochen!' : 'Gestoßen', youBash ? 'good' : 'bad');
+    this.float(this.chest(D), wasBlocking ? 'Deckung gebrochen!' : 'Gestoßen', A, true, D);
     this.sfx('block', true);
     this.deed('bash', A);
   }
 
-  private kill(D: Fighter, push: Vector3, a: ActiveAttack | null = null): void {
-    const finalBlow = !this.roundOver && (D === this.foe ? this.wins + 1 : this.losses + 1) >= WINS_NEEDED;
+  /** Ein Kämpfer fällt. killer kann fehlen (Wurfspeer ohne Besitzer o. Ä.) */
+  kill(D: Fighter, push: Vector3, a: ActiveAttack | null = null, killer: Fighter | null = null): void {
+    if (D.mode === 'dead') return;
+    const duel = this.mode === 'duel';
+    const finalBlow = duel && !this.roundOver && (this.teamWins[1 - D.team] ?? 0) + 1 >= WINS_NEEDED;
     this.blood(this.chest(D), push, 2.2);
     this.goreKill(D, push, a, finalBlow);
     D.die();
+    D.setBlock(false);
+    if (killer) killer.kills++;
     this.impulse(D, push.scale(1.5));
     this.setHitStop(0.25);
     window.setTimeout(() => this.sfx('fall'), 450);
     window.setTimeout(() => this.bloodPool(D), 1200);
+    if (killer) this.deed('kill', killer);
+    else this.spec.kick(1);
+    this.send('ev', { k: 'dead', w: this.idx(D) });
+    this.updateTargets(true);
+    if (duel) this.duelKill(D);
+    else this.groupKill(D);
+  }
+
+  private duelKill(D: Fighter): void {
     if (this.roundOver) return;
     this.roundOver = true;
-    this.deed('kill', D === this.player ? this.foe : this.player);
-    if (D === this.foe) {
-      this.wins++;
-      this.hud.hint('Sieg! Der Gegner liegt im Sand.', 3.5);
-    } else {
-      this.losses++;
-      this.hud.hint('Du bist gefallen …', 3.5);
-    }
-    this.hud.score(this.wins, this.losses);
-    const over = this.wins >= WINS_NEEDED || this.losses >= WINS_NEEDED;
-    this.send('ev', { k: 'round', w: D === this.foe ? 'host' : 'guest', s: [this.wins, this.losses], m: over, p: [this.player.parries, this.foe.parries] });
+    const winner = this.fighters.find((f) => f !== D && f.mode !== 'dead') ?? this.opp(D) ?? this.player;
+    const wt = winner.team;
+    this.teamWins[wt] = (this.teamWins[wt] ?? 0) + 1;
+    const won = wt === this.player.team;
+    this.hud.hint(won ? 'Sieg! Der Gegner liegt im Sand.' : 'Du bist gefallen …', 3.5);
+    this.updateScore();
+    const over = this.teamWins[wt] >= WINS_NEEDED;
+    this.send('ev', { k: 'round', wt, s: this.teamWins, m: over, ks: this.fighters.map((f) => [f.kills, f.parries]) });
     if (over) {
       this.matchOver = true;
-      this.pendingResult = { won: D === this.foe, wins: this.wins, losses: this.losses, foe: this.foe.info, parries: this.player.parries, pvp: this.role === 'host' };
+      this.pendingResult = this.makeResult(won);
       this.slowmo = 1.4;
-      this.spec.start(D === this.foe ? this.player : this.foe, D);
+      this.spec.start(winner, D);
     } else window.setTimeout(() => this.newRound(), 4500);
   }
 
+  /** Gruppenkampf: vorbei, wenn nur noch ein Team steht */
+  private groupKill(D: Fighter): void {
+    this.updateScore();
+    if (D === this.player) this.hud.hint('Du bist gefallen – schau zu', 3);
+    const alive = new Set(this.fighters.filter((f) => f.mode !== 'dead').map((f) => f.team));
+    if (alive.size > 1 || this.matchOver) return;
+    this.matchOver = true;
+    const wt = alive.size === 1 ? [...alive][0] : -1;
+    if (wt >= 0) this.teamWins[wt] = 1;
+    const won = wt === this.player.team;
+    this.slowmo = 1.3;
+    this.spec.kick(1);
+    this.arena.crowd.wave();
+    this.sound.roar(1, 3);
+    this.hud.hint(won ? 'Sieg! Die Arena gehört euch.' : 'Niederlage …', 3);
+    this.pendingResult = this.makeResult(won);
+    this.send('ev', { k: 'round', wt, s: this.teamWins, m: true, ks: this.fighters.map((f) => [f.kills, f.parries]) });
+    this.later(3.2, () => this.ceremonyDone('missio'));
+  }
+
+  /** Ergebnis aus Sicht des eigenen Kämpfers */
+  private makeResult(won: boolean): Omit<MatchResult, 'verdict'> {
+    const me = this.player;
+    const foes = this.fighters.filter((f) => f.team !== me.team);
+    const lvl = foes.length ? Math.round(foes.reduce((s, f) => s + f.info.level, 0) / foes.length) : 1;
+    const name = foes.length === 1 ? foes[0].info.name : this.mode === 'duel' ? (foes[0]?.info.name ?? 'Gegner') : `${foes.length} Gegner`;
+    return {
+      won,
+      mode: this.mode,
+      wins: this.teamWins[me.team] ?? 0,
+      losses: Math.max(0, ...this.teamWins.filter((_, t) => t !== me.team)),
+      foe: { name, level: lvl },
+      enemies: foes.length,
+      kills: me.kills,
+      parries: me.parries,
+      pvp: this.role !== 'solo' || this.fighters.some((f) => this.isRemote(f)),
+    };
+  }
+
+  /* ---------- Blut und Zerstückelung ---------- */
+
+  /** Körperteil abtrennen (auch beim Gast) */
+  sever(f: Fighter, part: SeverPart, dir: Vector3, power = 1): void {
+    if (!this.gore.sever(f.g, part, dir, power)) return;
+    this.sfx('hit', true);
+    this.setShake(0.6);
+    if (Vector3.Distance(this.camera.position, f.pos) < 5) this.hud.screenBlood?.(1);
+    this.send('ev', { k: 'sever', w: this.idx(f), part, d: [dir.x, dir.y, dir.z], pw: power });
+  }
+
+  /** Wunde am Körper an der Trefferstelle */
+  private wound(f: Fighter, contact: Vector3, size: number): void {
+    const bone = f.g.nodes.get(contact.y > f.pos.y + f.g.chestHeight + 0.1 ? 'spine_03' : 'spine_02') ?? f.g.nodes.get('spine_02');
+    if (!bone) return;
+    this.fx.wound(f.g.id, bone, contact, size);
+    this.send('ev', { k: 'wound', w: this.idx(f), p: [contact.x, contact.y, contact.z], s: size });
+  }
+
+  /** Blut an der Waffe des Angreifers */
+  private bloodyWeapon(f: Fighter, add: number): void {
+    const k = Math.min(1, (this.weaponBlood.get(f) ?? 0) + add * this.fx.goreMul);
+    this.weaponBlood.set(f, k);
+    f.g.setWeaponBlood(k);
+    this.send('ev', { k: 'wblood', w: this.idx(f), v: k });
+  }
+
+  /** Blutung bei wenig Leben: Tropfen, Flecken im Sand */
+  private bleed(dt: number): void {
+    for (const f of this.fighters) {
+      if (f.mode === 'dead' && f.g.severedParts === 0) continue;
+      const hpk = f.g.hp / f.stats.hpMax;
+      const rate = f.mode === 'dead' ? 3 : hpk < 0.5 ? (0.5 - hpk) * 14 : 0;
+      if (rate > 0 && Math.random() < rate * dt) {
+        this.fx.drip(f.pos.add(new Vector3((Math.random() - 0.5) * 0.3, f.g.chestHeight * (0.4 + Math.random() * 0.6), (Math.random() - 0.5) * 0.3)), 3);
+      }
+    }
+  }
+
+  /** Beim tödlichen Treffer: was fliegt weg? */
+  private goreKill(D: Fighter, push: Vector3, a: ActiveAttack | null, final: boolean): void {
+    if (this.gore.level !== 'full') return;
+    const big = !!a && (a.heavy || a.combo === 3 || a.power > 1.2);
+    if (Math.random() > (big ? 0.7 : 0.3)) return;
+    const r = Math.random();
+    // Im letzten Duell bleibt der Kopf dran – der Kaiser entscheidet noch
+    let part: SeverPart = r < 0.42 && !final ? 'head' : r < 0.67 ? 'armR' : r < 0.8 ? 'armL' : Math.random() < 0.5 ? 'legL' : 'legR';
+    if (final && part === 'head') part = 'armR';
+    this.sever(D, part, push, big ? 1.4 : 1);
+    if (big && Math.random() < 0.3) {
+      const second: SeverPart = part === 'armR' ? 'armL' : 'armR';
+      this.later(0.12, () => this.sever(D, second, push, 1.1));
+    }
+  }
+
+  /** Blutlache unter einem Körper (auch beim Gast) */
+  private bloodPool(f: Fighter): void {
+    const p = f.pos.add(new Vector3(Math.sin(f.g.heading) * -0.6, 0, Math.cos(f.g.heading) * -0.6));
+    this.fx.pool(p);
+    this.send('ev', { k: 'pool', p: [p.x, p.z] });
+  }
+
+  /* ---------- Sonderfähigkeiten ---------- */
+
   private challengeUntil = 0;
   private timers: { at: number; fn: () => void }[] = [];
+  private projectiles: { mesh: Mesh; from: Vector3; to: Vector3; t: number; dur: number; kind: 'javelin' | 'net'; owner: Fighter | null; spin: number }[] = [];
 
   /** In Spielzeit verzögert ausführen (läuft mit Zeitlupe und Pause) */
   private later(sec: number, fn: () => void): void {
@@ -1033,26 +1338,17 @@ export class Game implements FighterEvents {
     this.timers = this.timers.filter((t) => t.at > this.now);
     for (const t of due) t.fn();
   }
-  private projectiles: { mesh: Mesh; from: Vector3; to: Vector3; t: number; dur: number; kind: 'javelin' | 'net'; owner: Fighter | null; spin: number }[] = [];
-
-  /** Klasse eines Kämpfers setzen: Werte, Aussehen, Sonderfähigkeit */
-  setClass(f: Fighter, cls: ClassId, kit = CLASSES[cls].kit, tiers: [number, number, number, number, number] = [1, 1, 1, 1, 1]): void {
-    f.cls = cls;
-    f.kit = kit;
-    f.g.equip({ cls, tiers });
-    this.ai.specialKind = CLASSES[this.foe.cls].special.id;
-  }
 
   /** Sonderfähigkeit der Klasse */
   special(f: Fighter): void {
-    if (this.role === 'guest' && f === this.player) return;
+    if (this.role === 'guest') return;
     if (!f.canAct || f.mode === 'dead' || this.now < f.specialReadyAt || this.spec.inCeremony) return;
     const def = CLASSES[f.cls].special;
-    const D = f === this.player ? this.foe : this.player;
+    const D = this.opp(f);
+    if (!D) return;
     if (f.mode === 'block') f.setBlock(false);
     f.specialReadyAt = this.now + def.cooldown;
-    const mine = f === this.player;
-    this.float(this.chest(f), def.name + '!', mine ? 'good' : 'bad');
+    this.float(this.chest(f), def.name + '!', f, true);
     switch (def.id) {
       case 'ram': {
         f.faceTarget();
@@ -1066,19 +1362,19 @@ export class Game implements FighterEvents {
         let done = false;
         const check = () => {
           if (done || f.mode !== 'special') return;
-          const dist = Vector3.Distance(f.pos, D.pos);
-          if (dist < 1.6 && this.inFront(f, D, 1.1) && D.mode !== 'dead' && this.now >= D.invulnUntil) {
+          const V = this.victim(f, 1.6, 1.1);
+          if (V && this.now >= V.invulnUntil) {
             done = true;
             f.dashUntil = 0;
-            const push = D.pos.subtract(f.pos).normalize();
-            D.guardBreak(1.0);
-            D.drain(25);
-            this.impulse(D, push.scale(5));
+            const push = V.pos.subtract(f.pos).normalize();
+            V.guardBreak(1.0);
+            V.drain(25);
+            this.impulse(V, push.scale(5));
             this.setShake(0.5);
             this.setHitStop(0.12);
-            this.flash(D === this.player ? 'hurt' : 'strike');
+            this.hitFx(f, V, 'big');
             this.sfx('block', true);
-            this.float(this.chest(D), 'Umgerannt!', mine ? 'big' : 'bad');
+            this.float(this.chest(V), 'Umgerannt!', f, true, V, true);
             this.deed('bash', f);
           }
         };
@@ -1091,7 +1387,7 @@ export class Game implements FighterEvents {
         break;
       case 'hook':
         f.hookUntil = this.now + 5;
-        if (mine) this.hud.hint('Hakenschlag bereit: der nächste Schlag geht um den Schild', 2);
+        if (f === this.player) this.hud.hint('Hakenschlag bereit: der nächste Schlag geht um den Schild', 2);
         break;
       case 'javelin':
       case 'net': {
@@ -1101,7 +1397,7 @@ export class Game implements FighterEvents {
         f.modeUntil = this.now + 0.9;
         f.lastAction = f.g.animator.play('throw', { speed: 1.25, fadeIn: 0.06 });
         this.later(0.33, () => {
-          if (f.mode === 'dead') return;
+          if (f.mode === 'dead' || D.mode === 'dead') return;
           const from = f.pos.add(new Vector3(0, 1.6, 0));
           const to = D.pos.add(new Vector3(0, def.id === 'net' ? 1.0 : 1.25, 0));
           this.throwProjectile(def.id as 'javelin' | 'net', from, to, f);
@@ -1112,7 +1408,7 @@ export class Game implements FighterEvents {
         this.challengeUntil = this.now + 6;
         this.spec.kick(0.8);
         this.arena.crowd.wave();
-        if (mine || D === this.player) this.hud.hint('Herausforderung! 6 Sekunden mehr Schaden für beide', 2.2);
+        if (f === this.player || D === this.player) this.hud.hint('Herausforderung! 6 Sekunden mehr Schaden für alle', 2.2);
         break;
     }
   }
@@ -1160,12 +1456,23 @@ export class Game implements FighterEvents {
     window.setTimeout(() => p.mesh.dispose(), p.kind === 'net' ? 100 : 400);
     const A = p.owner;
     if (!A || this.role === 'guest') return;
-    const D = A === this.player ? this.foe : this.player;
-    const mine = A === this.player;
-    if (D.mode === 'dead') return;
-    if (Vector3.Distance(D.pos.add(new Vector3(0, 1.1, 0)), p.to) > 1.4 || this.now < D.invulnUntil) {
-      this.float(this.chest(D), 'Daneben', mine ? 'bad' : 'good');
-      this.deed('dodge', D);
+    // Getroffen wird, wer am Zielpunkt steht (auch ein anderer Gegner)
+    let D: Fighter | null = null;
+    let bd = 1.4;
+    for (const f of this.fighters) {
+      if (f.team === A.team || f.mode === 'dead') continue;
+      const d = Vector3.Distance(f.pos.add(new Vector3(0, 1.1, 0)), p.to);
+      if (d < bd) {
+        bd = d;
+        D = f;
+      }
+    }
+    const aimed = A.target ?? this.opp(A);
+    if (!D || this.now < D.invulnUntil) {
+      if (aimed) {
+        this.float(this.chest(aimed), 'Daneben', aimed, true, A);
+        this.deed('dodge', aimed);
+      }
       return;
     }
     if (p.kind === 'javelin') {
@@ -1173,27 +1480,27 @@ export class Game implements FighterEvents {
         D.blockReact(14, true);
         this.sparks(this.chest(D));
         this.sfx('block', true);
-        this.float(this.chest(D), 'Abgewehrt', mine ? '' : 'good');
+        this.float(this.chest(D), 'Abgewehrt', D, true, A);
         return;
       }
       const dmg = Math.round(18 * A.kit.damage * A.stats.lightMul * (1 - D.kit.armor.body));
       this.blood(this.chest(D), D.pos.subtract(A.pos).normalize());
       this.sfx('hit', true);
-      this.flash(D === this.player ? 'hurt' : 'strike');
-      this.float(this.chest(D), `Speer −${dmg}`, mine ? 'big' : 'bad');
+      this.hitFx(A, D, 'big');
+      this.float(this.chest(D), `Speer −${dmg}`, A, true, D, true);
       this.deed('heavy', A);
-      if (D.takeHit(dmg, 'hit_chest', true)) this.kill(D, D.pos.subtract(A.pos).normalize());
+      if (D.takeHit(dmg, 'hit_chest', true)) this.kill(D, D.pos.subtract(A.pos).normalize(), null, A);
       return;
     }
     // Netz
     if (D.cls === 'secutor' && Math.random() < 0.4) {
-      this.float(this.chest(D), 'Netz rutscht ab', mine ? 'bad' : 'good');
+      this.float(this.chest(D), 'Netz rutscht ab', D, true, A);
       return;
     }
     D.setBlock(false);
     D.stagger(1.6, 'hit_chest', 0.5);
     D.guardBrokenUntil = this.now + 1.8;
-    this.float(this.chest(D), 'Gefangen!', mine ? 'big' : 'bad');
+    this.float(this.chest(D), 'Gefangen!', A, true, D, true);
     this.deed('heavy', A);
     this.spec.kick(0.6);
     this.netOn(D.pos.clone(), 1.6);
@@ -1209,17 +1516,9 @@ export class Game implements FighterEvents {
     window.setTimeout(() => n.dispose(), sec * 1000);
   }
 
-  /** Bildschirm-Rückmeldung */
-  private flash(kind: 'hurt' | 'parry' | 'strike' | 'none'): void {
-    if (kind === 'none') return;
-    this.hud.flash?.(kind);
-    this.fovKick = Math.max(this.fovKick, kind === 'strike' ? 0.09 : kind === 'hurt' ? 0.06 : 0.04);
-    this.send('ev', { k: 'flash', f: kind === 'hurt' ? 'strike' : kind === 'strike' ? 'hurt' : kind });
-  }
-
   /** Waffenspur nur im Schwung */
   private updateTrails(): void {
-    for (const f of [this.player, this.foe]) {
+    for (const f of this.fighters) {
       const tip = f.g.tip;
       if (!tip) continue;
       let t = this.trails.get(f);
@@ -1246,9 +1545,12 @@ export class Game implements FighterEvents {
     }
   }
 
+  /* ---------- Duell-Ende ---------- */
+
   /** Todesstoß nach „Iugula!“ */
   private finisher(w: Fighter, l: Fighter): void {
     w.mode = 'free';
+    w.target = l;
     w.faceTarget();
     w.lastAction = w.g.animator.play('heavy', {
       range: [1.9, 3.1],
@@ -1279,13 +1581,6 @@ export class Game implements FighterEvents {
     });
   }
 
-  /** Blutlache unter einem Körper (auch beim Gast) */
-  private bloodPool(f: Fighter): void {
-    const p = f.pos.add(new Vector3(Math.sin(f.g.heading) * -0.6, 0, Math.cos(f.g.heading) * -0.6));
-    this.fx.pool(p);
-    this.send('ev', { k: 'pool', p: [p.x, p.z] });
-  }
-
   private ceremonyDone(v: Verdict): void {
     this.send('ev', { k: 'done', v });
     if (this.pendingResult) this.onMatchEnd?.({ ...this.pendingResult, verdict: v });
@@ -1294,20 +1589,22 @@ export class Game implements FighterEvents {
 
   private doCheer(f: Fighter): void {
     if (f.mode !== 'free' || this.spec.inCeremony) return;
-    const d = Vector3.Distance(f.pos, (f === this.player ? this.foe : this.player).pos);
+    const o = this.opp(f);
+    const d = o ? Vector3.Distance(f.pos, o.pos) : 99;
     if (d > 2.6) f.lastAction = f.g.animator.play('cheer', { speed: 1.3 });
     this.spec.cheer(f);
   }
 
   private newRound(): void {
-    this.gore.clear([this.player.g, this.foe.g]);
+    this.gore.clear(this.fighters.map((f) => f.g));
     this.fx.clearWounds();
-    for (const f of [this.player, this.foe]) {
+    for (const f of this.fighters) {
       if (f.mode === 'dead') f.revive();
       else f.refill();
     }
     this.roundOver = false;
-    this.ai.reset(this.now);
+    this.updateTargets(true);
+    for (const a of this.ais.values()) a.reset(this.now);
     this.spec.resetRound();
     this.hud.hint('Nächste Runde – kämpft!', 2);
     this.send('ev', { k: 'next' });
@@ -1356,9 +1653,12 @@ export class Game implements FighterEvents {
         break;
       }
       case 'lock':
-        this.locked = !this.locked;
-        this.manualUnlock = !this.locked;
-        this.hud.setLocked(this.locked);
+        if (this.locked && this.enemies(p).length > 1) this.cycleTarget(p);
+        else {
+          this.locked = !this.locked;
+          this.manualUnlock = !this.locked;
+          this.hud.setLocked(this.locked);
+        }
         break;
       case 'cheer':
         this.doCheer(p);
@@ -1366,7 +1666,21 @@ export class Game implements FighterEvents {
     }
   }
 
+  /** Automatisch aufschalten, wenn ein Gegner nah ist */
+  private autoLock(): void {
+    const t = this.player.target;
+    const dist = t ? Vector3.Distance(this.player.pos, t.pos) : 99;
+    if (!this.locked && !this.manualUnlock && t && dist < this.lockRange && t.mode !== 'dead') {
+      this.locked = true;
+      this.hud.setLocked(true);
+    }
+    if (this.manualUnlock && dist > this.lockRange + 4) this.manualUnlock = false;
+    this.input.locked = this.locked;
+  }
+
   /* ---------- Hauptschleife ---------- */
+
+  private lastFoeLabel = '';
 
   update(rawDt: number, daylight: number, freeze = false): void {
     if (this.role === 'guest') {
@@ -1387,16 +1701,9 @@ export class Game implements FighterEvents {
       dt *= slow;
     }
     this.now += dt;
-    for (const f of [this.player, this.foe]) f.tick(this.now, dt);
-
-    // Automatisch aufschalten, wenn der Gegner nah ist
-    const dist = Vector3.Distance(this.player.pos, this.foe.pos);
-    if (!this.locked && !this.manualUnlock && dist < this.lockRange && this.foe.mode !== 'dead') {
-      this.locked = true;
-      this.hud.setLocked(true);
-    }
-    if (this.manualUnlock && dist > this.lockRange + 4) this.manualUnlock = false;
-    this.input.locked = this.locked;
+    for (const f of this.fighters) f.tick(this.now, dt);
+    this.updateTargets();
+    this.autoLock();
 
     const ceremony = this.spec.inCeremony;
     const acts = this.input.takeActions();
@@ -1404,18 +1711,18 @@ export class Game implements FighterEvents {
     // Gnadenfrist abarbeiten
     const due = this.grace.filter((g) => g.at <= this.now);
     this.grace = this.grace.filter((g) => g.at > this.now);
-    for (const g of due) this.resolve(g.A, g.a, true);
-    if (!freeze && this.role === 'solo' && !ceremony) this.aiMove = this.ai.update(this.now);
+    for (const g of due) this.resolve(g.A, g.a, true, g.D);
+    if (!freeze && !ceremony) for (const [f, ai] of this.ais) this.aiMoves.set(f, ai.update(this.now));
     this.spec.update(dt);
 
     if (ceremony) this.moveCeremony(dt);
     else {
-      this.movePlayer(dt);
-      if (this.role !== 'host') this.moveFoe(dt, freeze);
+      if (this.player.owner === 'local') this.movePlayer(dt);
+      for (const f of this.ais.keys()) this.moveAi(f, dt, freeze);
     }
     if (this.role === 'host') this.updateHostNet(dt);
-    for (const f of [this.player, this.foe]) {
-      if (!(this.role === 'host' && f === this.foe && !ceremony)) this.integrate(f, dt);
+    for (const f of this.fighters) {
+      if (!(this.role === 'host' && this.isRemote(f) && !ceremony)) this.integrate(f, dt);
       f.g.animator.update(dt);
     }
     this.arena.update(dt, daylight);
@@ -1440,26 +1747,73 @@ export class Game implements FighterEvents {
 
   private updateHud(): void {
     const p = this.player;
+    const foe = this.foe;
     this.updateSpecialHud();
-    this.hud.favor(p.favor, this.foe.favor);
+    this.hud.favor(p.favor, foe.favor);
     this.hud.setBars(this.pct(p, 'hp'), this.pct(p, 'st'), p.exhausted);
-    if (!this.locked || this.foe.mode === 'dead') {
+    const label = `${foe.info.name} · Stufe ${foe.info.level}`;
+    if (label !== this.lastFoeLabel) {
+      this.lastFoeLabel = label;
+      this.hud.foeName(label);
+      this.updateScore();
+    }
+    this.updateMarks();
+    if (!this.locked || foe.mode === 'dead' || foe === p) {
       this.hud.guard(null);
       return;
     }
-    const fa = this.foe.attack;
+    let incoming = false;
+    let heavy = false;
+    let impactIn: number | null = null;
+    let windup = 1;
+    if (this.role === 'guest') {
+      const fa = this.foeAttackLocal;
+      incoming = !!fa && this.now < fa.impactAt;
+      heavy = !!fa?.hv;
+      impactIn = fa && incoming && this.blockAssist !== 'off' ? fa.impactAt - this.now : null;
+      windup = fa?.wu ?? 1;
+    } else {
+      // Angriffe auf mich: vom Ziel oder von jedem anderen Gegner, der mich anvisiert
+      let fa: ActiveAttack | null = null;
+      for (const o of this.enemies(p)) {
+        if (o.target !== p || !o.attack || this.now >= o.attack.impactAt) continue;
+        if (!fa || o.attack.impactAt < fa.impactAt) fa = o.attack;
+      }
+      incoming = !!fa;
+      heavy = !!fa?.heavy;
+      impactIn = fa && this.blockAssist !== 'off' ? fa.impactAt - this.now : null;
+      windup = fa ? fa.impactAt - fa.start : 1;
+    }
     this.hud.guard({
-      anchor: this.foe.pos.add(new Vector3(0, this.foe.g.chestHeight - 0.05, 0)),
+      anchor: foe.pos.add(new Vector3(0, foe.g.chestHeight - 0.05, 0)),
       blocking: p.blocking,
-      foeBlocking: this.foe.blocking,
-      incoming: !!fa && this.now < fa.impactAt,
-      heavy: !!fa?.heavy,
-      impactIn: fa && this.now < fa.impactAt && this.blockAssist !== 'off' ? fa.impactAt - this.now : null,
-      windup: fa ? fa.impactAt - fa.start : 1,
+      foeBlocking: foe.blocking,
+      incoming,
+      heavy,
+      impactIn,
+      windup,
       parryWindow: COMBAT.parryWindow + p.stats.parryBonus,
-      foeHp: this.pct(this.foe, 'hp'),
-      foeSt: this.pct(this.foe, 'st'),
+      foeHp: this.pct(foe, 'hp'),
+      foeSt: this.pct(foe, 'st'),
     });
+  }
+
+  /** Namen und Leben über allen anderen Kämpfern */
+  private updateMarks(): void {
+    if (!this.hud.marks) return;
+    if (this.fighters.length <= 2 || this.spec.inCeremony) {
+      this.hud.marks([]);
+      return;
+    }
+    const me = this.player;
+    const list: Mark[] = [];
+    for (const f of this.fighters) {
+      if (f === me || f.mode === 'dead' || (this.locked && f === this.foe)) continue;
+      const s = this.hud.project(f.pos.add(new Vector3(0, f.g.chestHeight + 0.75, 0)));
+      if (!s) continue;
+      list.push({ x: s.x, y: s.y, hp: this.pct(f, 'hp'), ally: f.team === me.team, name: f.info.name });
+    }
+    this.hud.marks(list);
   }
 
   /* ---------- Bewegung ---------- */
@@ -1484,7 +1838,7 @@ export class Game implements FighterEvents {
       // Beim Ausholen leicht auf den Gegner zugehen, damit der Schlag sitzt
       const d = f.target.pos.subtract(f.pos);
       d.y = 0;
-      if (this.now < f.attack.impactAt && d.length() > 1.7) {
+      if (this.now < f.attack.impactAt && d.length() > 1.7 && d.length() < f.kit.reach + 1.2) {
         dir = d.normalize();
         target = 1.4;
       }
@@ -1531,15 +1885,16 @@ export class Game implements FighterEvents {
   }
 
   private movePlayer(dt: number): void {
+    if (this.player.mode === 'dead') return;
     const wish = this.stickWorld();
     const mag = Math.min(1, Math.hypot(this.input.move.x, this.input.move.y));
     this.steer(this.player, wish, mag, this.locked, dt);
   }
 
-  /** Zeremonie: der Sieger geht beim Todesurteil zum Verlierer, sonst stehen beide */
+  /** Zeremonie: der Sieger geht beim Todesurteil zum Verlierer, sonst stehen alle */
   private moveCeremony(dt: number): void {
     const c = this.spec.cer;
-    for (const f of [this.player, this.foe]) {
+    for (const f of this.fighters) {
       if (c && c.phase === 'walk' && f === c.winner) {
         const d = c.loser.pos.subtract(f.pos);
         d.y = 0;
@@ -1554,9 +1909,9 @@ export class Game implements FighterEvents {
     }
   }
 
-  private moveFoe(dt: number, freeze: boolean): void {
-    const m = freeze ? { dir: Vector3.Zero(), speed: 0 } : this.aiMove;
-    this.steer(this.foe, m.dir, Math.min(1, m.speed / this.maxSpeed(this.foe, true)), true, dt);
+  private moveAi(f: Fighter, dt: number, freeze: boolean): void {
+    const m = freeze ? { dir: Vector3.Zero(), speed: 0 } : (this.aiMoves.get(f) ?? { dir: Vector3.Zero(), speed: 0 });
+    this.steer(f, m.dir, Math.min(1, m.speed / this.maxSpeed(f, true)), true, dt);
   }
 
   private integrate(f: Fighter, dt: number): void {
@@ -1581,11 +1936,17 @@ export class Game implements FighterEvents {
       }
     };
     for (const o of this.arena.obstacles) push(o.x, o.z, o.r);
-    const other = f === this.player ? this.foe : this.player;
-    if (other.mode !== 'dead' && f.mode !== 'dead') push(other.pos.x, other.pos.z, 0.42);
+    if (f.mode === 'dead') return;
+    for (const other of this.fighters) {
+      if (other !== f && other.mode !== 'dead') push(other.pos.x, other.pos.z, 0.42);
+    }
   }
 
   /* ---------- Kamera ---------- */
+
+  private cerCam = 0;
+  private cine = false;
+  private specCam = 0;
 
   private updateCamera(dt: number): void {
     if (this.cine !== this.spec.inCeremony) {
@@ -1594,6 +1955,7 @@ export class Game implements FighterEvents {
     }
     const d = this.input.takeCamDelta();
     const p = this.player;
+    const foe = this.foe;
     const target = p.pos.add(new Vector3(0, 1.5, 0));
     let camPos: Vector3;
     let look: Vector3;
@@ -1604,32 +1966,41 @@ export class Game implements FighterEvents {
       const w = cer.winner.pos;
       const l = cer.loser.pos;
       const mid = Vector3.Lerp(w, l, 0.5);
-      const d = l.subtract(w);
-      d.y = 0;
-      const side = new Vector3(d.z, 0, -d.x).normalize();
-      camPos = mid.add(side.scale(3.1)).add(d.normalize().scale(-0.6)).add(new Vector3(0, 0.95, 0));
+      const dd = l.subtract(w);
+      dd.y = 0;
+      const side = new Vector3(dd.z, 0, -dd.x).normalize();
+      camPos = mid.add(side.scale(3.1)).add(dd.normalize().scale(-0.6)).add(new Vector3(0, 0.95, 0));
       look = mid.add(new Vector3(0, 0.75, 0));
-    } else if (this.spec.inCeremony) {
+    } else if (this.spec.inCeremony && cer) {
       // Kinoperspektive: Kaiserloge im Hintergrund, langsame Fahrt
       this.cerCam += dt;
-      const mid = Vector3.Lerp(p.pos, this.foe.pos, 0.5);
+      const mid = Vector3.Lerp(cer.winner.pos, cer.loser.pos, 0.5);
       const toEmp = this.arena.crowd.emperor.subtract(mid);
       toEmp.y = 0;
       const base = Math.atan2(toEmp.x, toEmp.z) + Math.PI + 0.42 + this.cerCam * 0.05;
       camPos = mid.add(new Vector3(Math.sin(base) * 6.4, 1.35 + this.cerCam * 0.02, Math.cos(base) * 6.4));
       look = Vector3.Lerp(mid.add(new Vector3(0, 1.0, 0)), this.arena.crowd.emperor, 0.2);
       this.yaw = base + Math.PI;
-    } else if (this.locked && this.foe.mode !== 'dead') {
+    } else if (p.mode === 'dead' && this.mode !== 'duel') {
+      // Zuschauen: langsame Fahrt um die Kämpfenden
+      this.specCam += dt;
+      const alive = this.fighters.filter((f) => f.mode !== 'dead');
+      const c = alive.length ? alive.reduce((s, f) => s.add(f.pos), Vector3.Zero()).scale(1 / alive.length) : Vector3.Zero();
+      const a = this.specCam * 0.15;
+      camPos = c.add(new Vector3(Math.sin(a) * 8.5, 4.2, Math.cos(a) * 8.5));
+      look = c.add(new Vector3(0, 1.1, 0));
+    } else if (this.locked && foe.mode !== 'dead' && foe !== p) {
       this.cerCam = 0;
       // Hinter dem Spieler, Blick auf beide Kämpfer
-      const toFoe = this.foe.pos.subtract(p.pos);
+      const toFoe = foe.pos.subtract(p.pos);
       toFoe.y = 0;
       const want = Math.atan2(toFoe.x, toFoe.z);
       this.yaw += angleDiff(this.yaw, want) * Math.min(1, dt * 6);
       const fw = this.camForward();
       const right = new Vector3(fw.z, 0, -fw.x);
-      camPos = target.subtract(fw.scale(3.0)).add(new Vector3(0, 0.8, 0)).add(right.scale(1.45));
-      const mid = Vector3.Lerp(p.pos, this.foe.pos, 0.72);
+      const back = this.fighters.length > 2 ? 3.6 : 3.0;
+      camPos = target.subtract(fw.scale(back)).add(new Vector3(0, this.fighters.length > 2 ? 1.1 : 0.8, 0)).add(right.scale(1.45));
+      const mid = Vector3.Lerp(p.pos, foe.pos, 0.72);
       look = mid.add(new Vector3(0, 1.1, 0));
     } else {
       if (d.x !== 0 || d.y !== 0) this.lastDrag = this.now;
@@ -1668,20 +2039,9 @@ export class Game implements FighterEvents {
     this.camera.setTarget(this.camLook);
   }
 
-  private cerCam = 0;
-  private cine = false;
-
   /** Für Screenshots: feste Kameraposition */
   debugCamera(pos: Vector3, target: Vector3): void {
     this.camera.position.copyFrom(pos);
     this.camera.setTarget(target);
-  }
-
-  get playerFighter(): Gladiator {
-    return this.player.g;
-  }
-
-  get dummyFighter(): Gladiator {
-    return this.foe.g;
   }
 }

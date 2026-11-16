@@ -14,8 +14,9 @@ export type Verdict = 'missio' | 'iugula';
 export interface SpectacleHooks {
   now(): number;
   isAuthority(): boolean;
-  player(): Fighter;
-  foe(): Fighter;
+  fighters(): Fighter[];
+  opp(f: Fighter): Fighter | null;
+  byIdx(i: number): Fighter;
   hint(text: string, seconds?: number): void;
   float(f: Fighter, text: string, good: boolean): void;
   send(ev: Record<string, unknown>): void;
@@ -58,7 +59,7 @@ export class Spectacle {
 
   resetMatch(): void {
     this.resetRound();
-    for (const f of [this.h.player(), this.h.foe()]) f.favor = 50;
+    for (const f of this.h.fighters()) f.favor = 50;
     this.cer = null;
     this.crowdOf().vote = 0;
     this.h.vote(null);
@@ -96,8 +97,8 @@ export class Spectacle {
     const now = this.h.now();
     if ((this.cheerCd.get(f) ?? 0) > now) return;
     this.cheerCd.set(f, now + 5);
-    const other = f === this.h.player() ? this.h.foe() : this.h.player();
-    const losing = f.g.hp / f.stats.hpMax < other.g.hp / other.stats.hpMax - 0.25;
+    const other = this.h.opp(f);
+    const losing = !!other && f.g.hp / f.stats.hpMax < other.g.hp / other.stats.hpMax - 0.25;
     if ((this.good.get(f) ?? 0) > now) {
       this.add(f, 9);
       this.kick(0.8);
@@ -121,7 +122,7 @@ export class Spectacle {
       if (!this.cer) {
         // Lange nichts passiert: das Publikum wird ungeduldig
         if (now - this.lastExchange > 9) {
-          for (const f of [this.h.player(), this.h.foe()]) this.add(f, -1.2 * dt);
+          for (const f of this.h.fighters()) this.add(f, -1.2 * dt);
           if (!this.impatient) {
             this.impatient = true;
             this.sound.boo(2);
@@ -130,7 +131,7 @@ export class Spectacle {
           }
         }
         // Geschenke und faules Obst
-        for (const f of [this.h.player(), this.h.foe()]) {
+        for (const f of this.h.fighters()) {
           if (f.mode === 'dead') continue;
           if (f.favor >= 92 && !this.giftUsed.has(f)) {
             this.giftUsed.add(f);
@@ -159,7 +160,7 @@ export class Spectacle {
     // Chance auf Gnade: Gunst des Verlierers, etwas Willkür des Kaisers
     const p = Math.min(0.92, Math.max(0.08, 0.2 + (loser.favor / 100) * 0.65 + (Math.random() - 0.5) * 0.2));
     this.cer = { phase: 'fall', t: 0, winner, loser, p, verdict: null };
-    this.h.send({ k: 'cer', ph: 'fall' });
+    this.h.send({ k: 'cer', ph: 'fall', w: this.h.fighters().indexOf(winner), l: this.h.fighters().indexOf(loser) });
   }
 
   private updateCeremony(dt: number): void {
@@ -255,7 +256,7 @@ export class Spectacle {
   onRemote(e: Record<string, unknown>): void {
     switch (e.ph) {
       case 'fall':
-        this.cer = { phase: 'fall', t: 0, winner: this.h.player(), loser: this.h.foe(), p: 0.5, verdict: null };
+        this.cer = { phase: 'fall', t: 0, winner: this.h.byIdx(e.w as number), loser: this.h.byIdx(e.l as number), p: 0.5, verdict: null };
         break;
       case 'vote':
         if (this.cer && this.cer.phase !== 'vote') {

@@ -1,7 +1,7 @@
 import QRCode from 'qrcode';
 import type { Game } from '../game/game';
 import { localTransport, newRoomCode, normalizeCode, trysteroTransport, type Transport } from '../net/transport';
-import type { NetSetup } from '../game/game';
+import { assignTeams, isTeamMode, MODE_NAMES, MODE_SIZE, TEAM_COLORS, type FighterSetup, type MatchMode, type MatchSetup } from '../game/match';
 import { AI_LEVELS, AI_NAMES, aiAttrs, balanced, derive, equippedOf, heroKit, heroStats, winReward, type Attrs, type Hero } from '../game/hero';
 import { CLASS_ORDER, CLASSES, type ClassId } from '../data/classes';
 import { aiEquipment, applyItemStats, kitFor, tiersOf, validItem, winDenare, type Equipped, type Item } from '../game/items';
@@ -12,7 +12,40 @@ import { Results } from './results';
 import type { WeatherKind } from '../render/weather';
 import type { ArenaKind } from '../arena/capua';
 
-const PROTOCOL = 3;
+const PROTOCOL = 4;
+
+/** Namen für KI-Gladiatoren im Gruppenkampf */
+const GLADIATOR_NAMES = ['Spiculus', 'Priscus', 'Verus', 'Flamma', 'Carpophorus', 'Tetraites', 'Crixus', 'Oenomaus', 'Gannicus', 'Celadus', 'Triumphus', 'Columbus', 'Petraites', 'Hermes', 'Asteropaeus', 'Calamus'];
+
+function shuffle<T>(a: T[]): T[] {
+  const r = [...a];
+  for (let i = r.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [r[i], r[j]] = [r[j], r[i]];
+  }
+  return r;
+}
+
+function randomClass(): ClassId {
+  return CLASS_ORDER[Math.floor(Math.random() * CLASS_ORDER.length)];
+}
+
+/** KI-Kämpfer mit Stufe, zufälliger Klasse und passender Ausrüstung */
+function aiSetup(levelIdx: number, team: number, name: string): FighterSetup {
+  const lvl = AI_LEVELS[levelIdx];
+  const cls = randomClass();
+  const eq = aiEquipment(lvl);
+  return {
+    cls,
+    kit: kitFor(cls, eq),
+    tiers: tiersOf(eq),
+    stats: applyItemStats(derive(aiAttrs(lvl)), eq),
+    info: { name, level: lvl },
+    team,
+    owner: 'ai',
+    ai: levelIdx,
+  };
+}
 type Screen = 'menu-main' | 'menu-host' | 'menu-join' | 'menu-train' | 'menu-hero';
 export interface World {
   pick(): { weather: WeatherKind; time: number };
@@ -124,42 +157,108 @@ export class Menu {
   }
 
   /** Klassen der Trainingsgegner (pro Besuch neu gewürfelt) */
-  private trainClasses: ClassId[] = AI_LEVELS.map(() => CLASS_ORDER[Math.floor(Math.random() * CLASS_ORDER.length)]);
+  private trainClasses: ClassId[] = AI_LEVELS.map(() => randomClass());
   private trainEq: Equipped[] = AI_LEVELS.map((l) => aiEquipment(l));
+  private trainMode: MatchMode = (localStorage.getItem('seg-mode') as MatchMode) || 'duel';
+
+  /** Eigener Held als Kämpfer im Plan */
+  private heroSetup(team: number, owner: string): FighterSetup {
+    const eq = equippedOf(this.hero);
+    return {
+      cls: this.hero.cls,
+      kit: heroKit(this.hero),
+      tiers: tiersOf(eq),
+      stats: heroStats(this.hero),
+      info: { name: this.hero.name, level: this.hero.level },
+      team,
+      owner,
+    };
+  }
+
+  /** Stufe der KI-Verbündeten: passend zum eigenen Helden */
+  private allyLevel(max: number): number {
+    let j = 0;
+    AI_LEVELS.forEach((l, i) => {
+      if (l <= this.hero.level) j = i;
+    });
+    return Math.min(j, max);
+  }
+
+  /** Trainingsplan: Duell gegen den gewählten Gegner oder Gruppenkampf mit KI-Füllung */
+  private trainSetup(i: number, mode: MatchMode): MatchSetup {
+    if (mode === 'duel') {
+      const fc = this.trainClasses[i];
+      const feq = this.trainEq[i];
+      const lvl = AI_LEVELS[i];
+      return {
+        mode,
+        fighters: [
+          this.heroSetup(0, 'local'),
+          {
+            cls: fc,
+            kit: kitFor(fc, feq),
+            tiers: tiersOf(feq),
+            stats: applyItemStats(derive(aiAttrs(lvl)), feq),
+            info: { name: `${AI_NAMES[i]} (${CLASSES[fc].name})`, level: lvl },
+            team: 1,
+            owner: 'ai',
+            ai: i,
+          },
+        ],
+      };
+    }
+    const teams = assignTeams(mode, 1);
+    const names = shuffle(GLADIATOR_NAMES);
+    const ally = this.allyLevel(i);
+    const fighters: FighterSetup[] = [this.heroSetup(teams[0], 'local')];
+    for (let k = 1; k < teams.length; k++) {
+      const friend = isTeamMode(mode) && teams[k] === teams[0];
+      fighters.push(aiSetup(friend ? ally : i, teams[k], names[k % names.length]));
+    }
+    return { mode, fighters };
+  }
 
   /** Eigene Werte und KI-Gegner fürs Training setzen */
-  private applySolo(i: number): void {
-    const lvl = AI_LEVELS[i];
-    const fc = this.trainClasses[i];
-    const feq = this.trainEq[i];
-    this.game.setupSolo(
-      heroStats(this.hero),
-      { name: this.hero.name, level: this.hero.level },
-      applyItemStats(derive(aiAttrs(lvl)), feq),
-      { name: `${AI_NAMES[i]} (${CLASSES[fc].name})`, level: lvl },
-      i,
-    );
-    this.game.setClass(this.game.player, this.hero.cls, heroKit(this.hero), tiersOf(equippedOf(this.hero)));
-    this.game.setClass(this.game.foe, fc, kitFor(fc, feq), tiersOf(feq));
+  private applySolo(i: number, mode: MatchMode = 'duel'): void {
+    this.game.startSolo(this.trainSetup(i, mode));
+  }
+
+  private markMode(): void {
+    $('train-mode').querySelectorAll<HTMLButtonElement>('button').forEach((b) => b.classList.toggle('on', b.dataset.mode === this.trainMode));
+    $('train-info').textContent =
+      this.trainMode === 'duel'
+        ? 'Wähle deinen Gegner. Erfahrung gibt es nur für einen Sieg (2 Runden gewinnen).'
+        : isTeamMode(this.trainMode)
+          ? `${MODE_NAMES[this.trainMode]}: KI-Gefährten an deiner Seite. Sieg, wenn das gegnerische Team fällt. Stufe der Gegner:`
+          : `${MODE_NAMES[this.trainMode]}: jeder gegen jeden, nur einer verlässt die Arena. Stufe der Gegner:`;
   }
 
   private showTrain(): void {
     const list = $('train-list');
     list.innerHTML = '';
-    this.trainClasses = AI_LEVELS.map(() => CLASS_ORDER[Math.floor(Math.random() * CLASS_ORDER.length)]);
+    this.trainClasses = AI_LEVELS.map(() => randomClass());
     this.trainEq = AI_LEVELS.map((l) => aiEquipment(l));
+    $('train-mode').querySelectorAll<HTMLButtonElement>('button').forEach((b) => {
+      b.onclick = () => {
+        this.trainMode = b.dataset.mode as MatchMode;
+        localStorage.setItem('seg-mode', this.trainMode);
+        this.showTrain();
+      };
+    });
+    this.markMode();
+    const mode = this.trainMode;
     AI_LEVELS.forEach((lvl, i) => {
       const b = document.createElement('button');
       const xp = winReward(this.hero.level, lvl, 0, false, false).base;
-      b.innerHTML = `${AI_NAMES[i]} · ${CLASSES[this.trainClasses[i]].name} · Stufe ${lvl}<small>Sieg: ${xp} Erfahrung, ${winDenare(lvl, false)} Denare, Beute</small>`;
+      const who = mode === 'duel' ? `${AI_NAMES[i]} · ${CLASSES[this.trainClasses[i]].name}` : `${AI_NAMES[i]}${isTeamMode(mode) ? 'e' : ''} · ${MODE_SIZE[mode] - (isTeamMode(mode) ? MODE_SIZE[mode] / 2 : 1)} Gegner`;
+      b.innerHTML = `${who} · Stufe ${lvl}<small>Sieg: ${xp}+ Erfahrung, ${winDenare(lvl, false)} Denare, Beute</small>`;
       b.onclick = async () => {
         this.settings.difficulty = i;
         saveSettings(this.settings);
         await this.world.setArena(this.settings.arena);
-        this.applySolo(i);
+        this.applySolo(i, mode);
         const w = this.world.pick();
         this.world.apply(w.weather, w.time);
-        this.game.rematch();
         this.close('solo');
       };
       list.appendChild(b);
@@ -196,16 +295,15 @@ export class Menu {
     const code = newRoomCode();
     this.show('menu-host');
     $('host-code').textContent = code;
-    $('host-status').textContent = 'Warte auf einen Gegner …';
     const url = this.link(code);
     QRCode.toCanvas($<HTMLCanvasElement>('qr'), url, { width: 150, margin: 1, color: { dark: '#1a0f0a', light: '#f3e9d8' } }).catch(() => undefined);
     $('m-share').onclick = async () => {
-      const text = `Kämpf gegen mich in der Arena von Sanguis et Gloria! Code: ${code}`;
+      const text = `Kämpf mit mir in der Arena von Sanguis et Gloria! Code: ${code}`;
       try {
         if (navigator.share) await navigator.share({ title: 'Sanguis et Gloria', text, url });
         else {
           await navigator.clipboard.writeText(url);
-          $('host-status').textContent = 'Link kopiert – schick ihn deinem Gegner.';
+          $('host-status').textContent = 'Link kopiert – schick ihn deinen Mitspielern.';
         }
       } catch {
         /* abgebrochen */
@@ -214,65 +312,117 @@ export class Menu {
     const t = this.connect(code);
     this.transport = t;
     let started = false;
-    t.onPeerJoin(() => {
-      $('host-status').textContent = 'Gegner gefunden, verbinde …';
-      t.send('hello', { v: PROTOCOL, role: 'host', hero: this.heroMsg() });
-    });
-    t.on('hello', (d) => {
-      const h = d as { v: number; role: string; hero?: HeroMsg };
+    /** Gäste in der Reihenfolge ihres Eintreffens */
+    const guests = new Map<string, { nick: string; hero: HeroMsg }>();
+    const modeSel = $<HTMLSelectElement>('host-match');
+    const startBtn = $<HTMLButtonElement>('m-host-start');
+    const aiIdx = this.allyLevel(AI_LEVELS.length - 1);
+
+    const refresh = () => {
+      if (started) return;
+      const mode = modeSel.value as MatchMode;
+      const size = MODE_SIZE[mode];
+      const humans = [this.hero.name, ...[...guests.values()].map((g) => String(g.hero.name).slice(0, 18))];
+      const teams = assignTeams(mode, Math.min(humans.length, size));
+      const box = $('host-lobby');
+      box.innerHTML = '';
+      for (let i = 0; i < size; i++) {
+        const el = document.createElement('span');
+        const human = i < humans.length;
+        el.className = human ? '' : 'ai';
+        const dot = document.createElement('i');
+        dot.style.background = TEAM_COLORS[teams[i] % TEAM_COLORS.length].field;
+        el.appendChild(dot);
+        el.appendChild(document.createTextNode(human ? humans[i] : `KI (Stufe ${AI_LEVELS[aiIdx]})`));
+        box.appendChild(el);
+      }
+      const extra = humans.length - size;
+      startBtn.disabled = guests.size === 0;
+      $('host-status').textContent =
+        guests.size === 0
+          ? 'Warte auf Mitspieler … freie Plätze füllt die KI.'
+          : extra > 0
+            ? `${extra} Spieler zu viel für ${MODE_NAMES[mode]} – wähle einen größeren Modus.`
+            : `${guests.size} Mitspieler bereit. Freie Plätze übernimmt die KI.`;
+      t.send('lobby', { names: humans, mode });
+    };
+    modeSel.onchange = refresh;
+    refresh();
+
+    t.onPeerJoin(() => t.send('hello', { v: PROTOCOL, role: 'host', hero: this.heroMsg() }));
+    t.on('hello', (d, peer) => {
+      const h = d as { v: number; role: string; hero?: HeroMsg; nick?: string };
       if (h.v !== PROTOCOL) {
-        $('host-status').textContent = 'Verschiedene Spielversionen – bitte beide Seiten neu laden.';
+        $('host-status').textContent = 'Verschiedene Spielversionen – bitte alle Seiten neu laden.';
         return;
       }
-      if (h.role !== 'guest' || started || !h.hero) return;
-      started = true;
-      const guest = h.hero;
+      if (h.role !== 'guest' || started || !h.hero || !h.nick) return;
+      if (!guests.has(peer) && guests.size >= 7) return;
+      guests.set(peer, { nick: String(h.nick), hero: h.hero });
+      refresh();
+    });
+
+    startBtn.onclick = () => {
+      if (started || guests.size === 0) return;
+      const mode = modeSel.value as MatchMode;
+      const size = MODE_SIZE[mode];
       const equal = $<HTMLSelectElement>('host-mode').value === 'equal';
-      const me = this.heroMsg();
-      const eqOf = (m: HeroMsg): Equipped => {
+      const chosen = [...guests.entries()].slice(0, size - 1);
+      const teams = assignTeams(mode, chosen.length + 1);
+      const names = shuffle(GLADIATOR_NAMES);
+      const fromMsg = (m: HeroMsg, team: number, owner: string): FighterSetup => {
         const eq: Equipped = {};
         for (const it of Array.isArray(m.items) ? m.items.filter(validItem) : []) eq[it.slot] = it;
-        return eq;
+        const cls: ClassId = CLASS_ORDER.includes(m.cls) ? m.cls : 'murmillo';
+        return {
+          cls,
+          kit: equal ? CLASSES[cls].kit : kitFor(cls, eq),
+          tiers: tiersOf(eq),
+          stats: equal ? derive(balanced(m.attrs)) : applyItemStats(derive(m.attrs), eq),
+          info: { name: String(m.name).slice(0, 18), level: m.level },
+          team,
+          owner,
+        };
       };
-      const gcls: ClassId = CLASS_ORDER.includes(guest.cls) ? guest.cls : 'murmillo';
-      const meEq = eqOf(me);
-      const gEq = eqOf(guest);
-      const setup: NetSetup = {
-        stats: equal
-          ? [derive(balanced(me.attrs)), derive(balanced(guest.attrs))]
-          : [applyItemStats(derive(me.attrs), meEq), applyItemStats(derive(guest.attrs), gEq)],
-        cls: [me.cls, gcls],
-        kits: equal ? [CLASSES[me.cls].kit, CLASSES[gcls].kit] : [kitFor(me.cls, meEq), kitFor(gcls, gEq)],
-        tiers: [tiersOf(meEq), tiersOf(gEq)],
-        info: [
-          { name: me.name, level: me.level },
-          { name: String(guest.name).slice(0, 18), level: guest.level },
-        ],
-        ...((): { weather: WeatherKind; time: number } => this.world.pick())(),
-        arena: this.settings.arena,
-      };
-      $('host-status').textContent = `${setup.info[1].name} (Stufe ${guest.level}) ist da! Arena wird vorbereitet …`;
-      let ready = false;
-      const go = () => {
-        if (ready) return;
-        ready = true;
+      const fighters: FighterSetup[] = [fromMsg(this.heroMsg(), teams[0], 'local')];
+      chosen.forEach(([peer, g], k) => fighters.push(fromMsg(g.hero, teams[k + 1], peer)));
+      for (let k = fighters.length; k < size; k++) fighters.push(aiSetup(aiIdx, teams[k], names[k % names.length]));
+      const setup: MatchSetup = { mode, fighters, ...this.world.pick(), arena: this.settings.arena };
+      const nicks: Record<string, string> = {};
+      for (const [peer, g] of chosen) nicks[peer] = g.nick;
+      started = true;
+      startBtn.disabled = true;
+      $('host-status').textContent = 'Die Arena wird vorbereitet …';
+      const waiting = new Set(chosen.map(([p]) => p));
+      let go = false;
+      const begin = () => {
+        if (go) return;
+        go = true;
         this.countdown('host-status', () => {
           t.send('start', { v: PROTOCOL });
-          this.game.startNet('host', t, setup);
+          this.game.startNet('host', t, setup, 'local');
           this.close('host');
         });
       };
-      t.on('ready', go);
+      t.on('ready', (_d, peer) => {
+        waiting.delete(peer);
+        if (waiting.size === 0) begin();
+      });
       void this.world.setArena(setup.arena!).then(() => {
         this.world.apply(setup.weather as WeatherKind, setup.time ?? 14);
-        t.send('prep', { v: PROTOCOL, setup });
-        // Falls der Gast nicht antwortet: trotzdem beginnen
-        window.setTimeout(go, 20000);
+        t.send('prep', { v: PROTOCOL, setup, nicks });
+        // Falls ein Gast nicht antwortet: trotzdem beginnen
+        window.setTimeout(begin, 20000);
       });
-    });
-    t.onPeerLeave(() => {
-      if (started && !this.open) this.game.endNet('Der Gegner hat die Arena verlassen');
-      else if (!started) $('host-status').textContent = 'Gegner wieder weg. Warte …';
+    };
+
+    t.onPeerLeave((peer) => {
+      const g = guests.get(peer);
+      if (started && !this.open) this.game.peerLeft(peer, g ? String(g.hero.name) : 'Ein Mitspieler');
+      else if (!started) {
+        guests.delete(peer);
+        refresh();
+      }
     });
   }
 
@@ -293,40 +443,60 @@ export class Menu {
     $('join-status').textContent = 'Suche die Arena …';
     const t = this.connect(code);
     this.transport = t;
+    const nick = Math.random().toString(36).slice(2, 10);
     let started = false;
+    let hostPeer: string | null = null;
+    const hello = () => t.send('hello', { v: PROTOCOL, role: 'guest', hero: this.heroMsg(), nick });
     const timeout = window.setTimeout(() => {
-      if (!started) $('join-status').textContent = 'Noch keine Arena gefunden. Code richtig? Wartet der Gastgeber noch? Tipp: Klappt es im Mobilfunk nicht, beide ins selbe WLAN.';
+      if (!hostPeer) $('join-status').textContent = 'Noch keine Arena gefunden. Code richtig? Wartet der Gastgeber noch? Tipp: Klappt es im Mobilfunk nicht, alle ins selbe WLAN.';
     }, 20000);
     t.onPeerJoin(() => {
-      $('join-status').textContent = 'Arena gefunden, verbinde …';
-      t.send('hello', { v: PROTOCOL, role: 'guest', hero: this.heroMsg() });
+      if (!hostPeer) $('join-status').textContent = 'Verbinde …';
+      hello();
     });
-    t.on('hello', (d) => {
-      const h = d as { v: number };
-      if (h.v !== PROTOCOL) $('join-status').textContent = 'Verschiedene Spielversionen – bitte beide Seiten neu laden.';
-      else $('join-status').textContent = 'Verbunden! Der Kampf beginnt …';
-      // Antwort, falls unser erstes Hallo zu früh kam
-      t.send('hello', { v: PROTOCOL, role: 'guest', hero: this.heroMsg() });
+    t.on('hello', (d, peer) => {
+      const h = d as { v: number; role: string };
+      if (h.role !== 'host') return; // andere Gäste
+      if (h.v !== PROTOCOL) {
+        $('join-status').textContent = 'Verschiedene Spielversionen – bitte alle Seiten neu laden.';
+        return;
+      }
+      if (hostPeer === null) $('join-status').textContent = 'Verbunden! Warte, bis der Gastgeber den Kampf beginnt …';
+      hostPeer = peer;
+      // Immer antworten: nach kurzer Funkstille meldet der Gastgeber uns neu an
+      if (!setup) hello();
     });
-    let setup: NetSetup | null = null;
+    t.on('lobby', (d, peer) => {
+      if (setup || (hostPeer && peer !== hostPeer)) return;
+      const l = d as { names: string[]; mode: MatchMode };
+      $('join-status').textContent = `${MODE_NAMES[l.mode] ?? 'Arena'} · In der Arena: ${l.names.map((n) => String(n).slice(0, 18)).join(', ')}. Warte auf den Start …`;
+    });
+    let setup: MatchSetup | null = null;
+    let me: string | null = null;
     t.on('prep', async (d) => {
       if (setup) return;
-      setup = (d as { setup: NetSetup }).setup;
+      const m = d as { setup: MatchSetup; nicks: Record<string, string> };
+      me = Object.keys(m.nicks ?? {}).find((k) => m.nicks[k] === nick) ?? null;
+      if (!me) {
+        $('join-status').textContent = 'Die Arena ist voll – der Kampf beginnt ohne dich.';
+        return;
+      }
+      setup = m.setup;
       window.clearTimeout(timeout);
-      $('join-status').textContent = 'Verbunden! Die Arena wird vorbereitet …';
+      $('join-status').textContent = 'Die Arena wird vorbereitet …';
       if (setup.arena) await this.world.setArena(setup.arena);
       if (setup.weather) this.world.apply(setup.weather as WeatherKind, setup.time ?? 14);
       $('join-status').textContent = 'Bereit – der Kampf beginnt gleich …';
       t.send('ready', { v: PROTOCOL });
     });
     t.on('start', () => {
-      if (started || !setup) return;
+      if (started || !setup || !me) return;
       started = true;
-      this.game.startNet('guest', t, setup);
+      this.game.startNet('guest', t, setup, me);
       this.close('guest');
     });
-    t.onPeerLeave(() => {
-      if (started) this.game.endNet('Verbindung zum Gastgeber verloren');
+    t.onPeerLeave((peer) => {
+      if (started && peer === hostPeer) this.game.endNet('Verbindung zum Gastgeber verloren');
     });
   }
 
