@@ -3,6 +3,8 @@ import type { Arena } from '../arena/capua';
 import { ARENA } from '../arena/capua';
 import type { Gladiator } from '../gladiators/gladiator';
 import type { Action, TouchInput } from '../input/touch';
+import type { AnimCmd } from '../gladiators/gladiator';
+import type { Transport } from '../net/transport';
 import { AiController } from './ai';
 import { blockSideFor, COMBAT, Fighter, type ActiveAttack, type Dir, type FighterEvents } from './fighter';
 import { Fx } from './fx';
@@ -24,6 +26,30 @@ export interface HudHooks {
   score(player: number, foe: number): void;
   setLocked(on: boolean): void;
 }
+
+export type Role = 'solo' | 'host' | 'guest';
+
+/** Zustand eines Kämpfers im Netz-Schnappschuss */
+interface NetFighter {
+  p: [number, number];
+  h: number;
+  ly: number;
+  sp: number;
+  bw: boolean;
+  m: string;
+  g: Dir;
+  hp: number;
+  st: number;
+  ex: boolean;
+  at: { d: Dir; hv: boolean; ii: number; wu: number } | null;
+}
+
+interface Snap {
+  f: [NetFighter, NetFighter]; // 0 = Gastgeber, 1 = Gast
+  recv: number;
+}
+
+type NetAction = Exclude<Action, { type: 'roll' } | { type: 'lock' } | { type: 'cheer' }> | { type: 'roll'; v: [number, number] };
 
 export interface GuardInfo {
   anchor: Vector3; // Weltposition über dem Gegner
@@ -92,24 +118,376 @@ export class Game implements FighterEvents {
     this.ai.setLevel(i);
   }
 
+
+  /* ---------- Netzwerk ---------- */
+
+  role: Role = 'solo';
+  private net: Transport | null = null;
+  private snapTimer = 0;
+  private inTimer = 0;
+  private snaps: Snap[] = [];
+  private remoteGuest: { p: [number, number]; h: number; ly: number; v: [number, number]; bw: boolean } | null = null;
+  private guestRollUntil = 0;
+  private foeAttackLocal: { d: Dir; hv: boolean; impactAt: number; wu: number } | null = null;
+  onNetEnd: ((reason: string) => void) | null = null;
+
+  /** Wechselt die Rolle. Gastgeber: der Gegner wird vom Gast gesteuert. Gast: das eigene Handy zeigt nur an. */
+  startNet(role: Role, net: Transport): void {
+    this.role = role;
+    this.net = net;
+    if (role === 'guest') {
+      // Aus Sicht des Gasts ist er selbst der zweite Kämpfer: Rollen tauschen
+      const me = this.foe;
+      const other = this.player;
+      (this as { player: Fighter }).player = me;
+      (this as { foe: Fighter }).foe = other;
+      net.on('snap', (d) => this.onSnap(d as { f: [NetFighter, NetFighter] }));
+      net.on('anim', (d) => {
+        const m = d as { w: 0 | 1; cmd: AnimCmd };
+        // w = 0: Gastgeber-Figur (hier Gegner), 1: Gast-Figur (hier ich)
+        (m.w === 0 ? this.foe : this.player).g.animator.apply(m.cmd);
+      });
+      net.on('ev', (d) => this.onEvent(d as Record<string, unknown>));
+    } else if (role === 'host') {
+      this.player.g.animator.listener = (cmd) => net.send('anim', { w: 0, cmd });
+      this.foe.g.animator.listener = (cmd) => net.send('anim', { w: 1, cmd });
+      net.on('in', (d) => {
+        this.remoteGuest = d as { p: [number, number]; h: number; ly: number; v: [number, number]; bw: boolean };
+        const g = (d as { g: Dir }).g;
+        if (g) this.foe.setGuard(g);
+      });
+      net.on('act', (d) => this.handleRemote(d as NetAction));
+    }
+    this.resetMatch();
+  }
+
+  /** Netzspiel beenden (Verbindung weg): zurück zum Training */
+  endNet(reason: string): void {
+    if (this.role === 'host') {
+      this.player.g.animator.listener = null;
+      this.foe.g.animator.listener = null;
+      this.role = 'solo';
+      this.net = null;
+      this.hud.hint(reason + ' – weiter gegen die KI', 3);
+      this.resetMatch();
+    } else if (this.role === 'guest') {
+      this.onNetEnd?.(reason);
+    }
+  }
+
+  resetMatch(): void {
+    this.wins = 0;
+    this.losses = 0;
+    this.hud.score(0, 0);
+    for (const f of [this.player, this.foe]) {
+      f.g.hp = COMBAT.hpMax;
+      f.g.stamina = COMBAT.staminaMax;
+      f.vel.setAll(0);
+    }
+    if (this.role !== 'guest') this.resetPositions();
+    else {
+      this.player.g.root.position.set(0, 0, 3.2);
+      this.player.g.setHeading(Math.PI);
+      this.yaw = Math.PI;
+    }
+    this.ai.reset(this.now);
+  }
+
+  private send(ch: string, data: unknown): void {
+    if (this.net && this.role === 'host') this.net.send(ch, data);
+  }
+
+  private blood(p: Vector3, d: Vector3): void {
+    this.fx.bloodAt(p, d);
+    this.send('ev', { k: 'blood', p: [p.x, p.y, p.z], d: [d.x, d.y, d.z] });
+  }
+
+  private sparks(p: Vector3): void {
+    this.fx.sparksAt(p);
+    this.send('ev', { k: 'sparks', p: [p.x, p.y, p.z] });
+  }
+
+  private float(w: Vector3, text: string, kind: 'good' | 'bad' | 'big' | '' = ''): void {
+    this.hud.floatText(w, text, kind);
+    // Beim Gast ist gut und schlecht vertauscht
+    const swap = kind === 'good' || kind === 'big' ? 'bad' : kind === 'bad' ? 'good' : '';
+    this.send('ev', { k: 'float', p: [w.x, w.y, w.z], t: text, kind: swap });
+  }
+
+  private setShake(v: number): void {
+    this.shake = v;
+    this.send('ev', { k: 'shake', v });
+  }
+
+  private setHitStop(v: number): void {
+    this.hitStop = v;
+    this.send('ev', { k: 'stop', v });
+  }
+
+  private impulse(f: Fighter, v: Vector3): void {
+    if (this.role === 'host' && f === this.foe) this.send('ev', { k: 'push', v: [v.x, v.z] });
+    else f.vel.addInPlace(v);
+  }
+
+  private netFighter(f: Fighter): NetFighter {
+    const a = f.attack;
+    return {
+      p: [f.pos.x, f.pos.z],
+      h: f.g.heading,
+      ly: f.g.legYaw,
+      sp: f.mode === 'free' ? Math.hypot(f.vel.x, f.vel.z) : 0,
+      bw: f.backwards,
+      m: f.mode,
+      g: f.guard,
+      hp: f.g.hp,
+      st: f.g.stamina,
+      ex: f.exhausted,
+      at: a && this.now < a.impactAt ? { d: a.dir, hv: a.heavy, ii: a.impactAt - this.now, wu: a.impactAt - a.start } : null,
+    };
+  }
+
+  /** Gastgeber: Eingabe des Gasts ausführen */
+  private handleRemote(a: NetAction): void {
+    const f = this.foe;
+    if (f.mode === 'dead') return;
+    switch (a.type) {
+      case 'light':
+      case 'heavy':
+        f.startAttack(f.guard, a.type === 'heavy');
+        break;
+      case 'guard':
+        f.setGuard(a.dir);
+        break;
+      case 'parry':
+        f.parry(a.dir ?? f.guard);
+        break;
+      case 'bash':
+        f.bash();
+        break;
+      case 'roll':
+        f.roll(new Vector3(a.v[0], 0, a.v[1]));
+        break;
+    }
+  }
+
+  /** Gast: Ereignis vom Gastgeber */
+  private onEvent(e: Record<string, unknown>): void {
+    const v3 = (a: unknown) => {
+      const n = a as number[];
+      return new Vector3(n[0], n[1], n[2]);
+    };
+    switch (e.k) {
+      case 'blood':
+        this.fx.bloodAt(v3(e.p), v3(e.d));
+        break;
+      case 'sparks':
+        this.fx.sparksAt(v3(e.p));
+        break;
+      case 'float':
+        this.hud.floatText(v3(e.p), e.t as string, e.kind as 'good' | 'bad' | '');
+        break;
+      case 'shake':
+        this.shake = e.v as number;
+        break;
+      case 'stop':
+        this.hitStop = e.v as number;
+        break;
+      case 'push': {
+        const v = e.v as number[];
+        this.player.vel.addInPlace(new Vector3(v[0], 0, v[1]));
+        break;
+      }
+      case 'msg':
+        this.hud.hint(e.t as string, 1.4);
+        break;
+      case 'round': {
+        const s = e.s as [number, number];
+        this.wins = s[1];
+        this.losses = s[0];
+        this.hud.score(this.wins, this.losses);
+        this.hud.hint(e.w === 'guest' ? 'Sieg! Der Gegner liegt im Sand.' : 'Du bist gefallen …', 3.5);
+        break;
+      }
+      case 'next':
+        this.hud.hint('Nächste Runde – kämpft!', 2);
+        break;
+    }
+  }
+
+  /** Gast: Schnappschuss empfangen */
+  private onSnap(d: { f: [NetFighter, NetFighter] }): void {
+    this.snaps.push({ f: d.f, recv: performance.now() });
+    if (this.snaps.length > 3) this.snaps.shift();
+    const host = d.f[0];
+    const me = d.f[1];
+    // Eigener Zustand: Leben, Ausdauer, Modus kommen vom Gastgeber
+    const p = this.player;
+    p.g.hp = me.hp;
+    p.g.stamina = me.st;
+    p.exhaustedUntil = me.ex ? this.now + 0.2 : 0;
+    if (this.now >= this.guestRollUntil) p.mode = me.m as Fighter['mode'];
+    const f = this.foe;
+    f.g.hp = host.hp;
+    f.g.stamina = host.st;
+    f.mode = host.m as Fighter['mode'];
+    f.guard = host.g;
+    this.foeAttackLocal = host.at ? { d: host.at.d, hv: host.at.hv, impactAt: this.now + host.at.ii, wu: host.at.wu } : null;
+  }
+
+  /** Gast: Gegner zwischen den letzten zwei Schnappschüssen glätten */
+  private interpolateFoe(): void {
+    if (this.snaps.length === 0) return;
+    const b = this.snaps[this.snaps.length - 1];
+    const a = this.snaps.length > 1 ? this.snaps[this.snaps.length - 2] : b;
+    const span = Math.max(1, b.recv - a.recv);
+    const t = Math.min(1, (performance.now() - b.recv) / span);
+    const A = a.f[0];
+    const B = b.f[0];
+    const f = this.foe;
+    f.pos.x = A.p[0] + (B.p[0] - A.p[0]) * t;
+    f.pos.z = A.p[1] + (B.p[1] - A.p[1]) * t;
+    f.g.setHeading(A.h + angleDiff(A.h, B.h) * t);
+    f.g.legYaw = A.ly + (B.ly - A.ly) * t;
+    f.g.animator.setSpeed(B.sp, B.bw);
+  }
+
+  /** Gast: Eingabe ans Gastgeber-Handy */
+  private sendGuestAction(a: Action): void {
+    if (!this.net) return;
+    const p = this.player;
+    switch (a.type) {
+      case 'guard':
+        p.setGuard(a.dir);
+        this.net.send('act', a);
+        break;
+      case 'roll': {
+        let dir = this.stickWorld();
+        const fw = new Vector3(Math.sin(p.g.heading), 0, Math.cos(p.g.heading));
+        const right = new Vector3(fw.z, 0, -fw.x);
+        if (a.dir === 'left') dir = right.scale(-1);
+        else if (a.dir === 'right') dir = right;
+        else if (a.dir === 'forward') dir = fw;
+        else if (a.dir === 'back' || dir.length() < 0.25) dir = fw.scale(-1);
+        dir.normalize();
+        if (p.mode !== 'free' || p.exhausted) return;
+        // Ausweichen sofort selbst bewegen, der Gastgeber prüft Unverwundbarkeit
+        const dur = p.g.animator.durationOf('roll', COMBAT.roll.speed);
+        p.mode = 'roll';
+        p.rollDir = dir;
+        p.rollUntil = this.now + dur * 0.55;
+        this.guestRollUntil = this.now + dur * 0.78;
+        p.g.setHeading(Math.atan2(dir.x, dir.z));
+        this.net.send('act', { type: 'roll', v: [dir.x, dir.z] });
+        break;
+      }
+      case 'parry':
+        this.net.send('act', { type: 'parry', dir: a.dir ?? p.guard });
+        break;
+      case 'light':
+      case 'heavy':
+      case 'bash':
+        this.net.send('act', a);
+        break;
+      case 'lock':
+        this.locked = !this.locked;
+        this.manualUnlock = !this.locked;
+        this.hud.setLocked(this.locked);
+        break;
+      default:
+        break;
+    }
+  }
+
+  /** Gast: Bildaufbau ohne eigene Kampfregeln */
+  private updateGuest(dt: number): void {
+    this.now += dt;
+    if (this.hitStop > 0) {
+      this.hitStop -= dt;
+      this.scene.animationTimeScale = this.hitStop > 0 ? 0.06 : 1;
+    }
+    const dist = Vector3.Distance(this.player.pos, this.foe.pos);
+    if (!this.locked && !this.manualUnlock && dist < COMBAT.lockRange) {
+      this.locked = true;
+      this.hud.setLocked(true);
+    }
+    this.input.locked = this.locked;
+    for (const a of this.input.takeActions()) this.sendGuestAction(a);
+    this.interpolateFoe();
+    if (this.now >= this.guestRollUntil && this.player.mode === 'roll') this.player.mode = 'free';
+    this.movePlayer(dt);
+    this.integrate(this.player, dt);
+    for (const f of [this.player, this.foe]) f.g.animator.update(dt);
+    // Eingabe an den Gastgeber (30-mal pro Sekunde)
+    this.inTimer += dt;
+    if (this.inTimer >= 1 / 30 && this.net) {
+      this.inTimer = 0;
+      const p = this.player;
+      this.net.send('in', { p: [p.pos.x, p.pos.z], h: p.g.heading, ly: p.g.legYaw, v: [p.vel.x, p.vel.z], bw: p.backwards, g: p.guard });
+    }
+    this.updateCamera(dt);
+    // HUD: Angriff des Gegners aus dem Schnappschuss
+    this.hud.setBars(this.player.g.hp, this.player.g.stamina, this.player.exhausted);
+    const fa = this.foeAttackLocal;
+    if (!this.locked || this.foe.mode === 'dead') this.hud.guard(null);
+    else
+      this.hud.guard({
+        anchor: this.foe.pos.add(new Vector3(0, this.foe.g.chestHeight - 0.05, 0)),
+        mine: this.player.guard,
+        foe: blockSideFor(this.foe.guard),
+        incoming: fa && this.now < fa.impactAt ? blockSideFor(fa.d) : null,
+        heavy: !!fa?.hv,
+        impactIn: fa && this.now < fa.impactAt && this.blockAssist !== 'off' ? fa.impactAt - this.now : null,
+        windup: fa?.wu ?? 1,
+        parryWindow: COMBAT.parryWindow,
+        foeHp: this.foe.g.hp,
+        foeSt: this.foe.g.stamina,
+      });
+  }
+
+  /** Gastgeber: Position des Gasts übernehmen (mit Plausibilitätsprüfung) und Schnappschüsse senden */
+  private updateHostNet(dt: number): void {
+    const r = this.remoteGuest;
+    const f = this.foe;
+    if (r) {
+      const dx = r.p[0] - f.pos.x;
+      const dz = r.p[1] - f.pos.z;
+      const d = Math.hypot(dx, dz);
+      const max = 8 * Math.max(dt, 0.05) + 0.3;
+      const k = d > max ? max / d : 1;
+      f.pos.x += dx * k;
+      f.pos.z += dz * k;
+      if (f.mode !== 'roll') f.g.setHeading(r.h);
+      f.g.legYaw = r.ly;
+      f.vel.set(r.v[0], 0, r.v[1]);
+      f.backwards = r.bw;
+      f.g.animator.setSpeed(f.mode === 'free' ? Math.hypot(r.v[0], r.v[1]) : 0, r.bw);
+    }
+    this.snapTimer += dt;
+    if (this.snapTimer >= 0.05 && this.net) {
+      this.snapTimer = 0;
+      this.net.send('snap', { f: [this.netFighter(this.player), this.netFighter(this.foe)] });
+    }
+  }
+
   /* ---------- Ereignisse der Kämpfer ---------- */
 
   attackStart(f: Fighter, a: ActiveAttack): void {
-    if (f === this.player) this.ai.onFoeAttack(a, this.now);
+    if (f === this.player && this.role === 'solo') this.ai.onFoeAttack(a, this.now);
     else if (this.blockAssist === 'auto') this.autoGuard = { dir: blockSideFor(a.dir), at: this.now + 0.22 };
   }
 
   feint(f: Fighter): void {
     if (f === this.player) {
       this.ai.onFoeFeint();
-      this.hud.floatText(this.chest(f), 'Finte', 'good');
+      this.float(this.chest(f), 'Finte', 'good');
     } else {
-      this.hud.floatText(this.chest(f), 'Finte!', 'bad');
+      this.float(this.chest(f), 'Finte!', 'bad');
     }
   }
 
   message(f: Fighter, text: string): void {
     if (f === this.player) this.hud.hint(text, 1.2);
+    else if (this.role === 'host') this.send('ev', { k: 'msg', t: text });
   }
 
   private chest(f: Fighter): Vector3 {
@@ -142,7 +520,7 @@ export class Game implements FighterEvents {
     const youHit = A === this.player;
 
     if (this.now < D.invulnUntil) {
-      this.hud.floatText(this.chest(D), 'Ausgewichen', youHit ? 'bad' : 'good');
+      this.float(this.chest(D), 'Ausgewichen', youHit ? 'bad' : 'good');
       return;
     }
     const need = blockSideFor(a.dir);
@@ -152,12 +530,12 @@ export class Game implements FighterEvents {
       D.parrySucceeded();
       A.drain(COMBAT.parried.stamina);
       A.stagger(COMBAT.parried.staggerTime, 'knockback', 1.1);
-      A.vel.addInPlace(push.scale(-2.5));
-      this.fx.sparksAt(contact);
-      this.fx.sparksAt(contact);
-      this.hitStop = 0.14;
-      this.shake = 0.3;
-      this.hud.floatText(this.chest(D), youHit ? 'Pariert!' : 'PARADE!', youHit ? 'bad' : 'good');
+      this.impulse(A, push.scale(-2.5));
+      this.sparks(contact);
+      this.sparks(contact);
+      this.setHitStop(0.14);
+      this.setShake(0.3);
+      this.float(this.chest(D), 'Parade!', youHit ? 'bad' : 'good');
       return;
     }
 
@@ -167,21 +545,21 @@ export class Game implements FighterEvents {
       if (D.exhausted) {
         // Erschöpft: die Deckung bricht unter dem Schlag
         const dmg = Math.round(a.def.damage * 0.5);
-        this.fx.sparksAt(contact);
-        this.hud.floatText(this.chest(D), 'Deckung bricht', youHit ? 'good' : 'bad');
-        this.hitStop = 0.08;
+        this.sparks(contact);
+        this.float(this.chest(D), 'Deckung bricht', youHit ? 'good' : 'bad');
+        this.setHitStop(0.08);
         if (D.takeHit(dmg, 'hit_chest', a.heavy)) return this.kill(D, push);
         D.stagger(0.8, 'shield_break');
         D.guardBrokenUntil = this.now + 1.0;
         return;
       }
-      this.fx.sparksAt(contact);
+      this.sparks(contact);
       D.blockReact(a.def.damage * COMBAT.blockStaminaFactor * (a.heavy ? 1.4 : 1));
       if (a.heavy) D.g.hp = Math.max(1, D.g.hp - a.def.damage * COMBAT.heavyChip);
-      D.vel.addInPlace(push.scale(a.heavy ? 1.6 : 0.8));
-      this.shake = a.heavy ? 0.18 : 0.1;
-      this.hitStop = a.heavy ? 0.07 : 0.04;
-      this.hud.floatText(this.chest(D), 'Geblockt', youHit ? '' : 'good');
+      this.impulse(D, push.scale(a.heavy ? 1.6 : 0.8));
+      this.setShake(a.heavy ? 0.18 : 0.1);
+      this.setHitStop(a.heavy ? 0.07 : 0.04);
+      this.float(this.chest(D), 'Geblockt', youHit ? '' : 'good');
       return;
     }
 
@@ -208,12 +586,12 @@ export class Game implements FighterEvents {
     const dmg = Math.round(a.def.damage * zone.mult * (1 - armor) * weak);
     if (zone.debuff === 'weak') D.weakUntil = this.now + 3;
     if (zone.debuff === 'slow') D.slowUntil = this.now + 3;
-    this.fx.bloodAt(contact, push);
-    this.shake = a.heavy ? 0.4 : 0.22;
-    this.hitStop = a.heavy ? 0.1 : 0.06;
-    this.hud.floatText(this.chest(D), `${zone.name} −${dmg}`, youHit ? (a.heavy ? 'big' : 'good') : 'bad');
+    this.blood(contact, push);
+    this.setShake(a.heavy ? 0.4 : 0.22);
+    this.setHitStop(a.heavy ? 0.1 : 0.06);
+    this.float(this.chest(D), `${zone.name} −${dmg}`, youHit ? (a.heavy ? 'big' : 'good') : 'bad');
     if (D.takeHit(dmg, zone.anim, a.heavy)) return this.kill(D, push);
-    D.vel.addInPlace(push.scale(a.heavy ? 2.6 : 1.4));
+    this.impulse(D, push.scale(a.heavy ? 2.6 : 1.4));
   }
 
   bashImpact(A: Fighter): void {
@@ -223,32 +601,32 @@ export class Game implements FighterEvents {
     const youBash = A === this.player;
     if (dist > COMBAT.bash.range || !this.inFront(A, D, 1.0) || this.now < D.invulnUntil) {
       A.modeUntil += COMBAT.bash.missLock;
-      if (youBash) this.hud.floatText(this.chest(D), 'Daneben', 'bad');
+      if (youBash) this.float(this.chest(D), 'Daneben', 'bad');
       return;
     }
     if (D.mode === 'attack' && D.attack && this.now < D.attack.impactAt) {
-      if (youBash) this.hud.floatText(this.chest(D), 'Zu langsam', 'bad');
+      if (youBash) this.float(this.chest(D), 'Zu langsam', 'bad');
       return;
     }
     if (D.mode === 'bash') {
-      this.hud.floatText(this.chest(D), 'Konter', '');
-      this.fx.sparksAt(this.chest(D));
+      this.float(this.chest(D), 'Konter', '');
+      this.sparks(this.chest(D));
       return;
     }
     const push = D.pos.subtract(A.pos).normalize();
     D.stagger(COMBAT.bash.staggerTime, 'shield_break');
     D.guardBrokenUntil = this.now + COMBAT.bash.staggerTime + 0.25;
     D.drain(COMBAT.bash.targetStamina);
-    D.vel.addInPlace(push.scale(4));
-    this.shake = 0.25;
-    this.hitStop = 0.06;
-    this.hud.floatText(this.chest(D), 'Deckung gebrochen!', youBash ? 'good' : 'bad');
+    this.impulse(D, push.scale(4));
+    this.setShake(0.25);
+    this.setHitStop(0.06);
+    this.float(this.chest(D), 'Deckung gebrochen!', youBash ? 'good' : 'bad');
   }
 
   private kill(D: Fighter, push: Vector3): void {
     D.die();
-    D.vel.addInPlace(push.scale(1.5));
-    this.hitStop = 0.25;
+    this.impulse(D, push.scale(1.5));
+    this.setHitStop(0.25);
     if (this.roundOver) return;
     this.roundOver = true;
     if (D === this.foe) {
@@ -259,6 +637,7 @@ export class Game implements FighterEvents {
       this.hud.hint('Du bist gefallen …', 3.5);
     }
     this.hud.score(this.wins, this.losses);
+    this.send('ev', { k: 'round', w: D === this.foe ? 'host' : 'guest', s: [this.wins, this.losses] });
     window.setTimeout(() => this.newRound(), 4500);
   }
 
@@ -273,6 +652,7 @@ export class Game implements FighterEvents {
     this.roundOver = false;
     this.ai.reset(this.now);
     this.hud.hint('Nächste Runde – kämpft!', 2);
+    this.send('ev', { k: 'next' });
   }
 
   /* ---------- Eingaben ---------- */
@@ -335,6 +715,11 @@ export class Game implements FighterEvents {
   /* ---------- Hauptschleife ---------- */
 
   update(rawDt: number, daylight: number, freeze = false): void {
+    if (this.role === 'guest') {
+      this.updateGuest(Math.min(rawDt, 0.05));
+      this.arena.update(Math.min(rawDt, 0.05), daylight);
+      return;
+    }
     let dt = Math.min(rawDt, 0.05);
     if (this.hitStop > 0) {
       this.hitStop -= dt;
@@ -364,12 +749,13 @@ export class Game implements FighterEvents {
       if (this.player.mode === 'free') this.player.setGuard(this.autoGuard.dir);
       this.autoGuard = null;
     }
-    if (!freeze) this.aiMove = this.ai.update(this.now);
+    if (!freeze && this.role === 'solo') this.aiMove = this.ai.update(this.now);
 
     this.movePlayer(dt);
-    this.moveFoe(dt, freeze);
+    if (this.role === 'host') this.updateHostNet(dt);
+    else this.moveFoe(dt, freeze);
     for (const f of [this.player, this.foe]) {
-      this.integrate(f, dt);
+      if (!(this.role === 'host' && f === this.foe)) this.integrate(f, dt);
       f.g.animator.update(dt);
     }
     this.arena.update(dt, daylight);

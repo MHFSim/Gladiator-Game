@@ -297,13 +297,11 @@ export class Fighter {
     this.interruptAttack();
     this.mode = 'dead';
     this.g.animator.play('death', { fadeIn: 0.08, loop: true });
-    const grp = this.g.animator.get('death');
-    window.setTimeout(() => grp.pause(), this.g.animator.durationOf('death') * 960);
+    window.setTimeout(() => this.g.animator.pause('death'), this.g.animator.durationOf('death') * 960);
   }
 
   revive(): void {
-    const grp = this.g.animator.get('death');
-    grp.play(false);
+    this.g.animator.resume('death');
     this.g.hp = COMBAT.hpMax;
     this.g.stamina = COMBAT.staminaMax;
     this.exhaustedUntil = 0;

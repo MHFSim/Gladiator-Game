@@ -73,6 +73,34 @@
       <div id="stick-base"><div id="stick-knob"></div></div>
     </div>
 
+    <div id="menu" class="screen menu" hidden>
+      <div class="title">SANGUIS <span>ET</span> GLORIA</div>
+      <div id="menu-main" class="menu-col">
+        <button id="m-train" class="wide">Training gegen die KI</button>
+        <button id="m-host" class="wide">Arena eröffnen</button>
+        <button id="m-join" class="wide">Arena beitreten</button>
+      </div>
+      <div id="menu-host" class="menu-col" hidden>
+        <div class="menu-row">
+          <canvas id="qr" width="150" height="150"></canvas>
+          <div class="menu-col">
+            <div class="small">Code für deinen Gegner</div>
+            <div id="host-code" class="code"></div>
+            <button id="m-share" class="wide">Link teilen</button>
+          </div>
+        </div>
+        <div id="host-status" class="small">Warte auf einen Gegner …</div>
+        <button id="m-host-back" class="wide ghost">Abbrechen</button>
+      </div>
+      <div id="menu-join" class="menu-col" hidden>
+        <div class="small">Code der Arena eingeben</div>
+        <input id="join-code" maxlength="6" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="ABC234" />
+        <button id="m-join-go" class="wide">Beitreten</button>
+        <div id="join-status" class="small"></div>
+        <button id="m-join-back" class="wide ghost">Zurück</button>
+      </div>
+    </div>
+
     <div id="settings" class="panel" hidden>
       <h2>Einstellungen</h2>
       <label>Steuerung
@@ -119,6 +147,7 @@
       <label class="row"><input id="set-fps" type="checkbox" /> FPS anzeigen</label>
       <p class="help" id="help-text"></p>
       <button id="btn-close-settings" class="wide">Zurück in die Arena</button>
+      <button id="btn-menu" class="wide ghost">Zum Hauptmenü</button>
     </div>
 
     <div id="install" class="panel" hidden>

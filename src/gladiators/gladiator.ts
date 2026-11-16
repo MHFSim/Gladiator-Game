@@ -102,11 +102,23 @@ const LOCO: [string, number][] = [
 
 let actionIds = 1;
 
+/** Befehl an den Animator, übertragbar ans andere Handy */
+export type AnimCmd =
+  | { c: 'play'; id: number; name: string; speed: number; range?: [number, number]; duration?: number; fadeIn?: number; fadeOut?: number; loop?: boolean }
+  | { c: 'cancel'; id: number; fade: number }
+  | { c: 'speed'; id: number; speed: number }
+  | { c: 'stop'; name: string }
+  | { c: 'pause'; name: string }
+  | { c: 'resume'; name: string };
+
 export class Animator {
   private loco: AnimationGroup[] = [];
   private overlay: AnimationGroup;
   private actions: ActionState[] = [];
   private locoWeights = [1, 0, 0, 0];
+  /** Gastgeber: jeder Befehl wird hier gemeldet */
+  listener: ((cmd: AnimCmd) => void) | null = null;
+  private remoteIds = new Map<number, number>();
 
   constructor(private readonly groups: Map<string, AnimationGroup>, leftArm: string[]) {
     const exclude = new AnimationGroupMask(leftArm, AnimationGroupMaskMode.Exclude);
@@ -179,6 +191,7 @@ export class Animator {
     g.weight = 0;
     this.actions = this.actions.filter((a) => a.group !== g);
     const id = actionIds++;
+    this.listener?.({ c: 'play', id, name, speed, range: opts.range, duration: opts.duration, fadeIn: opts.fadeIn, fadeOut: opts.fadeOut, loop: opts.loop });
     this.actions.push({
       id,
       group: g,
@@ -197,6 +210,7 @@ export class Animator {
 
   /** Bricht eine laufende Aktion ab (Finte, Unterbrechung). Ereignisse feuern nicht mehr. */
   cancel(id: number, fadeOut = 0.12): void {
+    this.listener?.({ c: 'cancel', id, fade: fadeOut });
     for (const a of this.actions) {
       if (a.id === id) {
         a.fading = true;
@@ -209,12 +223,55 @@ export class Animator {
 
   /** Beendet alle Aktionen einer Animation (z. B. eine Schleife) */
   stop(name: string): void {
+    this.listener?.({ c: 'stop', name });
     for (const a of this.actions) if (a.group.name.startsWith(name + '#') || a.group.name === name) a.fading = true;
   }
 
   /** Tempo einer laufenden Aktion ändern (z. B. langsames Ausholen, schneller Schwung) */
   setActionSpeed(id: number, speed: number): void {
+    this.listener?.({ c: 'speed', id, speed });
     for (const a of this.actions) if (a.id === id) a.group.speedRatio = speed;
+  }
+
+  pause(name: string): void {
+    this.listener?.({ c: 'pause', name });
+    this.get(name).pause();
+  }
+
+  resume(name: string): void {
+    this.listener?.({ c: 'resume', name });
+    this.get(name).play(false);
+  }
+
+  /** Gast: Befehl vom Gastgeber nachspielen */
+  apply(cmd: AnimCmd): void {
+    switch (cmd.c) {
+      case 'play': {
+        const local = this.play(cmd.name, { speed: cmd.speed, range: cmd.range, duration: cmd.duration, fadeIn: cmd.fadeIn, fadeOut: cmd.fadeOut, loop: cmd.loop });
+        this.remoteIds.set(cmd.id, local);
+        if (this.remoteIds.size > 64) this.remoteIds.delete(this.remoteIds.keys().next().value as number);
+        break;
+      }
+      case 'cancel': {
+        const id = this.remoteIds.get(cmd.id);
+        if (id) this.cancel(id, cmd.fade);
+        break;
+      }
+      case 'speed': {
+        const id = this.remoteIds.get(cmd.id);
+        if (id) this.setActionSpeed(id, cmd.speed);
+        break;
+      }
+      case 'stop':
+        this.stop(cmd.name);
+        break;
+      case 'pause':
+        this.pause(cmd.name);
+        break;
+      case 'resume':
+        this.resume(cmd.name);
+        break;
+    }
   }
 
   isPlaying(id: number): boolean {

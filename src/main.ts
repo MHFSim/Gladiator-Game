@@ -9,6 +9,7 @@ import { Gladiator, GladiatorAssets } from './gladiators/gladiator';
 import { bindButtons, TouchInput } from './input/touch';
 import { createEnvironment } from './render/environment';
 import { Hud } from './ui/hud';
+import { Menu } from './ui/menu';
 
 const params = new URLSearchParams(location.search);
 const VERSION = __APP_VERSION__;
@@ -136,6 +137,20 @@ async function boot(): Promise<void> {
   game = new Game(scene, camera, arena, player, dummy, input, hud, settings.difficulty);
   const g = game;
   g.blockAssist = settings.blockAssist;
+  const hudEl = document.getElementById('hud') as HTMLElement;
+  const menu = new Menu(g, (mode) => {
+    hudEl.hidden = false;
+    if (mode === 'solo') hud.showControlsHint();
+  }, params.get('net') === 'local' ? 'local' : 'webrtc');
+  hudEl.hidden = menu.open;
+  g.onNetEnd = (reason) => {
+    hud.hint(reason, 3);
+    window.setTimeout(() => (location.href = location.origin + location.pathname), 2500);
+  };
+  (document.getElementById('btn-menu') as HTMLElement).addEventListener('click', () => {
+    location.href = location.origin + location.pathname;
+  });
+  let orbit = 0;
 
   progress(0.95, 'Die Tore öffnen sich …');
   // Nicht ewig auf Shader warten: nach 12 s trotzdem starten (fehlende Shader werden nachgeladen)
@@ -159,7 +174,11 @@ async function boot(): Promise<void> {
     last = now;
     const frameDt = settings.battery ? acc : dt;
     acc = 0;
-    if (!paused) g.update(frameDt, env.daylight, params.has('freeze'));
+    if (!paused) g.update(frameDt, env.daylight, params.has('freeze') || menu.open);
+    if (menu.open && !view) {
+      orbit += frameDt * 0.08;
+      g.debugCamera(new Vector3(Math.sin(orbit) * 11, 4.2, Math.cos(orbit) * 11), new Vector3(0, 1.4, 0));
+    }
     if (view === 'hero') g.debugCamera(g.player.pos.add(new Vector3(1.6, 1.7, 2.1)), g.player.pos.add(new Vector3(0, 1.25, 0)));
     if (view === 'arena') g.debugCamera(new Vector3(9, 6.5, -12), new Vector3(-2, 1.5, 2));
     if (view === 'front') g.debugCamera(g.player.pos.add(new Vector3(0.4, 1.7, 2.4)), g.player.pos.add(new Vector3(0, 1.35, 0)));

@@ -25,6 +25,14 @@ Gebaut mit [Babylon.js 9](https://www.babylonjs.com), läuft komplett über GitH
 - Runden mit Spielstand, Blut, Funken, Blutflecken im Sand, Bildstopp und Kamerawackeln.
 - Alle Kampfwerte in `src/data/combat.json`.
 
+**Mehrspieler (Phase 2)**
+- Hauptmenü: Training gegen die KI, Arena eröffnen, Arena beitreten.
+- Gastgeber bekommt einen 6-stelligen Code, QR-Code und einen Link zum Teilen.
+- Verbindung direkt zwischen den Handys (WebRTC über Trystero), kein eigener Server.
+- Das Handy des Gastgebers entscheidet über alle Treffer, Paraden und Blocks; der Gast sieht dasselbe mit kurzer Verzögerung.
+- Verlässt der Gast die Arena, kämpft der Gastgeber gegen die KI weiter.
+- Test ohne Internet: zwei Tabs mit `?net=local` (siehe `tools/net-test.mjs`).
+
 ## Steuerung
 
 | Aktion | Schema A: Gesten | Schema B: Tasten |

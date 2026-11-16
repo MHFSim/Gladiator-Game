@@ -119,10 +119,7 @@ export class Hud {
         ins.hidden = true;
         settings.installHintSeen = true;
         saveSettings(settings);
-        this.showControlsHint();
       });
-    } else {
-      this.showControlsHint();
     }
   }
 
